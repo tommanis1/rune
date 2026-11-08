@@ -16,6 +16,7 @@ impl<S: 'static> Runtime<S> {
         }
         let Some(request) = self.popups.pop_front() else { return Err(PopupMenuError::NotOpen) };
         self.popup_open = false;
+        self.drawn_popup = None;
         match picked {
             Some(id) => self.trace_event(format_args!("popup-menu:pick:{id}")),
             None => self.trace_event("popup-menu:cancel"),

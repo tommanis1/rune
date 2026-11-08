@@ -5,7 +5,10 @@ use super::*;
 pub(super) const CLICK_SLOP: f32 = 4.0;
 
 impl<S: 'static> Runtime<S> {
-    pub fn pointer_move(&mut self, x: f32, y: f32) { self.move_pointer(x, y, true); }
+    pub fn pointer_move(&mut self, x: f32, y: f32) {
+        if self.drawn_popup_pointer(x, y, None) { return; }
+        self.move_pointer(x, y, true);
+    }
 
     /// `drag_move` false keeps a held drag from getting a `Phase::Move`: a release at the
     /// point the drag last saw has nothing new to report, and its instant transaction would
@@ -166,6 +169,7 @@ impl<S: 'static> Runtime<S> {
     }
 
     pub fn pointer_down(&mut self, x: f32, y: f32) {
+        if self.drawn_popup_pointer(x, y, Some(true)) { return; }
         if self.capture.is_some() && self.capture_button != crate::PointerButton::Primary {
             self.pointer = Some((x, y));
             return;
@@ -291,6 +295,7 @@ impl<S: 'static> Runtime<S> {
     }
 
     pub fn pointer_up(&mut self, x: f32, y: f32) {
+        if self.drawn_popup_pointer(x, y, Some(false)) { return; }
         if self.capture.is_some() && self.capture_button != crate::PointerButton::Primary {
             self.pointer = Some((x, y));
             return;
@@ -351,6 +356,7 @@ impl<S: 'static> Runtime<S> {
     }
 
     pub fn pointer_leave(&mut self) {
+        self.drawn_popup_leave();
         self.wheel_lost();
         if self.capture.is_none() && self.secondary_capture.is_none() {
             self.pointer = None;
@@ -423,6 +429,7 @@ impl<S: 'static> Runtime<S> {
     /// Wheel or trackpad delta in points (positive `dy` moves content down, like a browser's
     /// negative deltaY). Applied 1:1: the platform supplies its own momentum phases.
     pub fn wheel(&mut self, x: f32, y: f32, dy: f32) {
+        if self.drawn_popup_dismiss() { return; }
         self.release_hover_hold();
         self.drop_scroll_holds();
         self.dismiss_help();

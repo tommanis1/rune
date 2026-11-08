@@ -89,6 +89,7 @@ impl<S: 'static> Runtime<S> {
     /// without them a pause of 0.1 s ends a gesture. An [`El::on_wheel`] handler under the
     /// pointer hears it first; [`Self::wheel_event`] also passes modifiers and phases.
     pub fn wheel_xy(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+        if self.drawn_popup_dismiss() { return; }
         if dx == 0.0 && dy == 0.0 { return; }
         self.wheel_event(crate::WheelEvent::new(dx, dy).at(x, y));
     }

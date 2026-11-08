@@ -1197,6 +1197,7 @@ impl<S: 'static> Runtime<S> {
         let queued = self.queue.len();
         let held = self.pointer.map(|(x, y)| self.refresh_hover(x, y));
         self.update_help();
+        self.draw_drawn_popup();
         self.layer_scratch = layers;
         self.built = true;
         self.land_unseen_entrances();

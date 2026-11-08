@@ -59,6 +59,11 @@ impl<S: 'static> Runtime<S> {
     /// `unhandled` happens when no handler takes the logical key.
     pub(crate) fn physical_then(&mut self, event: PhysicalInput, key: Option<KeyEvent>, base: Option<char>, unhandled: Option<Unhandled>) -> bool {
         if self.cancel_drag_key(&event) { return true; }
+        // A drawn menu takes every key while it shows (its releases go nowhere).
+        if self.drawn_popup_open() && matches!(event, PhysicalInput::Key { .. }) {
+            if let (PhysicalInput::Key { pressed: true, .. }, Some(key)) = (&event, &key) { self.drawn_popup_key(key); }
+            return true;
+        }
         if key.is_none() && matches!(event, PhysicalInput::Modifiers(_) | PhysicalInput::Key { pressed: false, .. }) {
             return self.physical_observation(event);
         }

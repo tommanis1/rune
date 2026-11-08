@@ -21,6 +21,7 @@ impl<S: 'static> Runtime<S> {
     /// phase. The innermost [`El::on_wheel`] handler there hears it first, up to the nearest
     /// scroll view; what none takes scrolls as [`Self::wheel_xy`] does.
     pub fn wheel_event(&mut self, ev: WheelEvent) {
+        if (ev.dx != 0.0 || ev.dy != 0.0) && self.drawn_popup_dismiss() { return; }
         if ev.phase == GesturePhase::Began { self.wheel_began(); }
         let moved = ev.dx != 0.0 || ev.dy != 0.0;
         if moved {
@@ -175,6 +176,7 @@ impl<S: 'static> Runtime<S> {
             PointerButton::Secondary => return self.secondary_down(x, y),
             _ => {}
         }
+        if self.drawn_popup_dismiss() { return; }
         if self.capture.is_some() { return; }
         self.pointer = Some((x, y));
         self.dismiss_help();

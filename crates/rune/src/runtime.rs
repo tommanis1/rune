@@ -134,6 +134,8 @@ pub(crate) mod selectable;
 mod input_click;
 #[path = "runtime/input/help.rs"]
 mod help;
+#[path = "runtime/input/drawn_popup.rs"]
+mod drawn_popup;
 #[path = "runtime/scroll/edge.rs"]
 mod scroll_edge;
 #[path = "runtime/scroll/x.rs"]
@@ -683,6 +685,8 @@ pub struct Runtime<S: 'static> {
     pub(crate) popups: std::collections::VecDeque<crate::popup_menu::Request>,
     /// The first of `popups` is showing.
     pub(crate) popup_open: bool,
+    /// That menu, drawn by Rune, where the platform has no native menus (`drawn_popup.rs`).
+    drawn_popup: Option<drawn_popup::DrawnMenu>,
     /// The file dialog asked for (`Tx::open_file`, `Tx::save_file`) and not yet answered.
     pub(crate) file_dialog: Option<crate::file_dialog::Pending>,
     /// File dialog callbacks, by id, until their answer runs.
@@ -1017,6 +1021,7 @@ impl<S: 'static> Runtime<S> {
             fit_held: false,
             window_resting: false,
             popup_open: false,
+            drawn_popup: None,
             pending: Tx::default(),
             animating: false,
             anim_sources: 0,

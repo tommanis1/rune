@@ -23,6 +23,7 @@ impl<S: 'static> Runtime<S> {
 
     /// Capture a secondary gesture without activating primary actions or text selection.
     pub fn secondary_down(&mut self, x: f32, y: f32) {
+        if self.drawn_popup_pointer(x, y, Some(true)) { return; }
         self.pointer = Some((x, y));
         self.release_hover_hold();
         self.keyboard_focus = false;
@@ -34,6 +35,7 @@ impl<S: 'static> Runtime<S> {
     }
 
     pub fn secondary_up(&mut self, x: f32, y: f32) {
+        if self.drawn_popup_pointer(x, y, Some(false)) { return; }
         self.pointer = Some((x, y));
         let down_link = self.take_secondary_link();
         self.secondary_region_up(x, y);

@@ -8,7 +8,10 @@
 //! - Windows: a `TrackPopupMenuEx` menu owned by the window, light or dark as the window's
 //!   content is. It drops down below an element anchor, as Windows menus do, and Rune keeps
 //!   drawing while it tracks: frames, wakes, timers and overlays.
-//! - Other platforms: [`popup_menu_supported`] is false and the callback gets `None` at once.
+//! - Other platforms (Linux, the BSDs): [`popup_menu_supported`] is false, and Rune draws the
+//!   menu itself over the window's content (`runtime/input/drawn_popup.rs`): the same items,
+//!   enabled state, checkmarks and shortcut hints, picked by click or Up/Down and Enter,
+//!   dismissed by Escape or a press outside. Without a shown window the callback gets `None`.
 //! - Headless runs: the menu stays open in `--tree` (`popupMenu`) until a script's
 //!   `{"type": "menu-pick", "id": "dark"}` or `{"type": "menu-cancel"}` answers it.
 
@@ -31,7 +34,8 @@ mod win32;
 #[cfg(target_os = "windows")]
 use win32 as host;
 
-/// Platforms without native menus: nothing opens, so every request answers `None` at once.
+/// Platforms without native menus: the presenter hands each request to the runtime's drawn
+/// menu instead (`Presenter::open`).
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod host {
     use super::{Arc, Rc, Session, Show, Waker, Window};
@@ -44,8 +48,8 @@ mod host {
 }
 
 /// Whether this platform shows native pop-up menus (macOS and Windows). Where it doesn't,
-/// [`Tx::popup_menu`] calls back with `None` straight away, so an app can draw its own menu
-/// instead.
+/// Rune draws [`Tx::popup_menu`]'s menu itself in the window, so an app needs no menu of its
+/// own either way; this tells only which kind the user sees.
 pub fn popup_menu_supported() -> bool { host::SUPPORTED }
 
 /// The event loop starts. `turn` runs its idle turn (due timers, overlays), for a platform whose
@@ -236,7 +240,8 @@ impl std::fmt::Debug for Call {
 impl Tx {
     /// Open a native pop-up menu once this handler's frame is done. `on_pick` runs, as an
     /// update would, with the picked item's id after the menu closes, or `None` when it's
-    /// dismissed or this platform has no native menu ([`popup_menu_supported`]). Exactly one
+    /// dismissed (Rune draws the menu where the platform has no native one,
+    /// [`popup_menu_supported`]). Exactly one
     /// call per request. A menu asked for while another is open opens after it closes.
     ///
     /// ```ignore
@@ -381,12 +386,17 @@ impl Presenter {
         true
     }
 
-    /// Opens the runtime's next menu over `window`. Without a shown window or native menus the
-    /// callback gets `None` at once. With `paints`, a menu anchored to an element waits while
+    /// Opens the runtime's next menu over `window`; without native menus Rune draws it
+    /// (`open_drawn_popup`). Without a shown window the callback gets `None` at once. With `paints`, a menu anchored to an element waits while
     /// the runtime has changes to commit, so the next frame places it from the new layout.
     /// True when the window should draw: a callback ran, the pointer was released, or a menu
     /// waits for that frame.
     pub(crate) fn open<S: 'static>(&mut self, rt: &mut Runtime<S>, window: Option<&Arc<Window>>, paints: bool) -> bool {
+        // No native menus here: the runtime draws the menu in the shown window.
+        if !host::SUPPORTED && window.is_some() {
+            if paints && rt.popup_waits_for_layout() { return true; }
+            return rt.open_drawn_popup();
+        }
         let mut redraw = false;
         loop {
             if window.is_some() && paints && rt.popup_waits_for_layout() { return true; }
