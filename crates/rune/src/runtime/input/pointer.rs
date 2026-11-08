@@ -194,6 +194,19 @@ impl<S: 'static> Runtime<S> {
             return;
         }
         self.playground_pointer_down(x);
+        // Every element the press is inside that watches presses within it hears of it first,
+        // whatever takes the press itself (a pane focusing on a click on its buttons).
+        let within: Vec<String> = self
+            .hits
+            .iter()
+            .filter(|&&(id, r)| self.hit_contains(id, r, x, y))
+            .filter_map(|&(id, _)| self.node_index.get(&id).copied())
+            .filter(|&i| self.nodes[i].handlers.on_press_within.is_some() && self.allowed(i) && !self.subtree_exiting(i))
+            .map(|i| self.nodes[i].path.clone())
+            .collect();
+        for path in within {
+            self.queue.push(Action::PressWithin(path));
+        }
         self.press_selection(target, x, y);
         // Inside a draggable row, dragging drags the row; clicks still select words and lines.
         if target.is_some_and(|t| self.nodes[t].handlers.on_drag.is_some() || self.nodes[t].handlers.drag_out.is_some()) {

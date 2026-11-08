@@ -26,6 +26,8 @@ pub(super) enum Action {
     Visible(String, bool),
     Press(String, crate::PointerButton),
     DoublePress(String),
+    /// A primary press went down inside the element at the path (`El::on_press_within`).
+    PressWithin(String),
     Link(String, usize),
     /// `El::on_link_secondary`: the text, its link and the press.
     LinkSecondary(String, usize, PointerEvent),
@@ -116,6 +118,7 @@ pub(super) fn live_only_handler(action: &Action) -> Option<&'static str> {
         Action::SelectionChange(..) => "on_selection_change",
         Action::Press(..) => "on_press",
         Action::DoublePress(_) => "on_double_press",
+        Action::PressWithin(_) => "on_press_within",
         Action::Link(..) => "on_link",
         Action::LinkSecondary(..) => "on_link_secondary",
         Action::SecondaryPress(..) => "on_secondary_press",
@@ -393,6 +396,12 @@ impl<S: 'static> Runtime<S> {
                 let Some(f) = self.node(&path).and_then(|n| n.handlers.on_press.clone()) else { return false };
                 log_event!(self, "press {path}");
                 one.button = button;
+                f(states!(self), &mut one);
+                true
+            }
+            Action::PressWithin(path) => {
+                let Some(f) = self.node(&path).and_then(|n| n.handlers.on_press_within.clone()) else { return false };
+                log_event!(self, "press within {path}");
                 f(states!(self), &mut one);
                 true
             }

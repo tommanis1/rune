@@ -13,6 +13,17 @@ impl El {
         }
         self
     }
+    /// Runs when a primary press goes down on this element or anything inside it, before the
+    /// press does anything else, whatever element takes it (a button, a text field, selectable
+    /// text). It never takes the press itself: a pane focuses on any click inside it, as a
+    /// browser's capturing `pointerdown` or `focusin` does.
+    pub fn on_press_within<S: 'static>(self, f: impl Fn(&mut S) + 'static) -> Self {
+        self.on_press_within_tx(move |s: &mut S, _tx: &mut Tx| f(s))
+    }
+    pub fn on_press_within_tx<S: 'static>(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Self {
+        self.handlers.on_press_within = Some(Rc::new(move |s, tx| f(downcast::<S>(s), tx)));
+        self
+    }
     /// Runs on the second of two presses on this element, as a double-click does: the second
     /// press lands within the system double-click interval of the first and within 4 pt of it,
     /// and releases inside. `on_press` still runs for each press, the first one right away, so a

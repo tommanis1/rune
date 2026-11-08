@@ -411,3 +411,27 @@ fn hover_change_spans_descendants_and_holds_through_a_press() {
     rt.frame(0.0);
     assert_eq!(rt.state.0, [true, false, true, false]);
 }
+
+#[test]
+fn a_press_on_a_button_inside_is_heard_within_and_still_presses_the_button() {
+    struct State { within: u32, pressed: u32 }
+    fn view(_: &State, _: &mut Cx<State>) -> El {
+        el().size(300.0, 300.0).child(col().key("pane").size(200.0, 200.0).on_press_within(|s: &mut State| s.within += 1)
+            .child(el().key("button").size(40.0, 40.0).on_press(|s: &mut State| s.pressed += 1)))
+    }
+    let mut rt = Runtime::new(State { within: 0, pressed: 0 }, view, (300.0, 300.0), Env::new(true, 1.0));
+    rt.frame(0.0);
+    let mut click = |rt: &mut Runtime<State>, x: f32, y: f32| {
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.frame(1.0 / 120.0);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 120.0);
+    };
+    click(&mut rt, 20.0, 20.0);
+    assert_eq!((rt.state.within, rt.state.pressed), (1, 1), "the button inside");
+    click(&mut rt, 150.0, 150.0);
+    assert_eq!((rt.state.within, rt.state.pressed), (2, 1), "the pane's empty part");
+    click(&mut rt, 250.0, 250.0);
+    assert_eq!((rt.state.within, rt.state.pressed), (2, 1), "outside");
+}
