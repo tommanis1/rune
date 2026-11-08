@@ -462,6 +462,13 @@ impl SidebarRow {
         self
     }
     /// Called on a double click (rename, open in a new window).
+    /// A drag on a row that doesn't reorder: `f` gets every phase (the pointer in window points via
+    /// [`Drag::window_point`]), for a row dropped outside the list. A press that doesn't move is
+    /// still a select. A row with [`Self::reorder`] uses [`Self::reorder_or_out`] instead.
+    pub fn on_drag<S: 'static>(mut self, f: impl Fn(&mut S, &Drag, &mut Tx) + 'static) -> Self {
+        self.acts.push(Box::new(move |e: El| e.on_drag(move |s: &mut S, d: &mut Drag, tx: &mut Tx| f(s, d, tx))));
+        self
+    }
     pub fn on_double_click<S: 'static>(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Self {
         self.acts.push(Box::new(move |e: El| e.on_double_press_tx(f)));
         self
@@ -472,15 +479,31 @@ impl SidebarRow {
     /// puts it back. `access` finds the [`Reorder`] in the app's state. A press that doesn't
     /// move is still a select.
     pub fn reorder<S: 'static>(
-        mut self,
+        self,
         state: &Reorder,
         index: usize,
         count: usize,
         access: fn(&mut S) -> &mut Reorder,
         drop: impl Fn(&mut S, usize, usize) + 'static,
     ) -> Self {
+        self.reorder_or_out(state, index, count, access, drop, |_: &mut S, _: &Drag, _: &mut Tx| false)
+    }
+    /// [`Self::reorder`], and the row can also be dropped outside the list, as a VS Code tab is
+    /// dropped on an editor group. `out` gets every phase of the drag (the pointer in window
+    /// points via [`Drag::window_point`]), so the app can show where a drop would land. On Up,
+    /// `out` returning `true` takes the drop: the row goes back to its place in the list.
+    pub fn reorder_or_out<S: 'static>(
+        mut self,
+        state: &Reorder,
+        index: usize,
+        count: usize,
+        access: fn(&mut S) -> &mut Reorder,
+        drop: impl Fn(&mut S, usize, usize) + 'static,
+        out: impl Fn(&mut S, &Drag, &mut Tx) -> bool + 'static,
+    ) -> Self {
         let bind = Box::new(move |e: El| {
             e.on_drag(move |s: &mut S, d: &mut Drag, tx: &mut Tx| {
+                let taken = out(s, d, tx);
                 let r = access(s);
                 match d.phase {
                     Phase::Down => {}
@@ -490,7 +513,7 @@ impl SidebarRow {
                         r.follow(index, count, d.dy, d.h);
                     }
                     Phase::Up => {
-                        if let Some((from, to)) = r.end(d.cancelled()) {
+                        if let Some((from, to)) = r.end(d.cancelled() || taken) {
                             drop(s, from, to);
                         }
                     }
