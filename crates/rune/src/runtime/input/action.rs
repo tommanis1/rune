@@ -28,6 +28,8 @@ pub(super) enum Action {
     DoublePress(String),
     /// A primary press went down inside the element at the path (`El::on_press_within`).
     PressWithin(String),
+    /// A click on a keyed text highlight: the `El::on_highlight_press` element and the key.
+    HighlightPress(String, String),
     Link(String, usize),
     /// `El::on_link_secondary`: the text, its link and the press.
     LinkSecondary(String, usize, PointerEvent),
@@ -119,6 +121,7 @@ pub(super) fn live_only_handler(action: &Action) -> Option<&'static str> {
         Action::Press(..) => "on_press",
         Action::DoublePress(_) => "on_double_press",
         Action::PressWithin(_) => "on_press_within",
+        Action::HighlightPress(..) => "on_highlight_press",
         Action::Link(..) => "on_link",
         Action::LinkSecondary(..) => "on_link_secondary",
         Action::SecondaryPress(..) => "on_secondary_press",
@@ -403,6 +406,12 @@ impl<S: 'static> Runtime<S> {
                 let Some(f) = self.node(&path).and_then(|n| n.handlers.on_press_within.clone()) else { return false };
                 log_event!(self, "press within {path}");
                 f(states!(self), &mut one);
+                true
+            }
+            Action::HighlightPress(path, key) => {
+                let Some(f) = self.node(&path).and_then(|n| n.handlers.on_highlight_press.clone()) else { return false };
+                log_event!(self, "highlight press {path} {key}");
+                f(states!(self), &key, &mut one);
                 true
             }
             Action::DoublePress(path) => {

@@ -23,6 +23,8 @@ mod selection_toolbar;
 mod text_selection;
 pub(crate) use selection_toolbar::OnPress;
 pub use text_selection::{SelectedText, SelectionChange, TextSelection};
+#[cfg(test)]
+pub(crate) use text_selection::to_source;
 
 /// The commit, the selection's ends and whether a press is making it: what a selection read
 /// from them depends on.
@@ -476,7 +478,9 @@ impl<S: 'static> Runtime<S> {
             .map_or((0, len), |t| trim_uncopied(&t.uncopied, (0, len)));
         let whole = !range.is_empty() && len > 0 && range.start <= full_a && range.end >= full_b;
         let text = n.text.as_ref().and_then(|t| t.copy_slice(range.start as u32, range.end as u32)).unwrap_or_default();
-        SelectedText { path, key: n.key.clone(), range, len, whole, text }
+        let source = n.text.as_ref().and_then(|t| t.source_map.as_deref())
+            .map_or_else(Vec::new, |m| text_selection::to_source(m, range.clone()));
+        SelectedText { path, key: n.key.clone(), range, len, whole, text, source }
     }
 
     /// What copying the selection puts on the clipboard: the nearest [`El::selection_copy`]
@@ -733,12 +737,23 @@ impl<S: 'static> Runtime<S> {
         let mut copy = crate::PopupItem::new("copy", "Copy").enabled(text.is_some());
         // The primary modifier, as the copy key handler takes it: ⌘C on macOS, Ctrl+C elsewhere.
         if let Ok(shortcut) = "mod+c".parse::<crate::Shortcut>() { copy = copy.key_equivalent(shortcut); }
+        // The app's own items (El::selection_menu_item), the nearest element's first.
+        let extra: Vec<crate::el::SelectionMenuItem> = std::iter::successors(Some(i), |&p| self.nodes[p].parent)
+            .flat_map(|p| self.nodes[p].handlers.selection_menu.iter().cloned())
+            .collect();
+        let selection = self.selection_snapshot();
+        let mut menu = crate::PopupMenu::new().item(copy);
+        for (id, title, _) in &extra {
+            menu = menu.item(crate::PopupItem::new(format!("app:{id}"), title.clone()).enabled(selection.is_some()));
+        }
         log_event!(self, "selection menu {path}");
         self.popups.push_back(crate::popup_menu::Request {
-            menu: crate::PopupMenu::new().item(copy),
+            menu,
             anchor: crate::PopupAnchor::Point(x, y),
-            on_pick: Box::new(move |_, picked, tx| {
-                if picked == Some("copy") && let Some(text) = text { tx.copy(text); }
+            on_pick: Box::new(move |s, picked, tx| {
+                if picked == Some("copy") && let Some(text) = text { tx.copy(text); return; }
+                let Some(id) = picked.and_then(|p| p.strip_prefix("app:")) else { return };
+                if let (Some((_, _, f)), Some(sel)) = (extra.iter().find(|e| e.0 == id), &selection) { f(s, sel, tx); }
             }),
         });
         true

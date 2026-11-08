@@ -28,6 +28,7 @@ mod reveal_chain;
 mod scroll_carried;
 mod scroll_children;
 mod scroll_growth;
+mod selection_actions;
 mod scroll_hover;
 mod scroll_retarget;
 mod scroll_spring;

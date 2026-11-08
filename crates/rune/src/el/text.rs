@@ -441,6 +441,23 @@ impl El {
         self.handlers.on_selection_change = Some(Rc::new(move |s, change, tx| f(downcast::<S>(s), change, tx)));
         self
     }
+    /// Adds an item titled `title` to the menu a secondary click on [`El::selectable`] text
+    /// inside this element opens, after Copy (the nearest element's items first). Picking it
+    /// runs `f` with the selection as the menu opened on it, the word under the pointer when
+    /// the click was outside the selection. For an app's own actions on selected text, such
+    /// as Comment. Disabled while nothing is selected.
+    pub fn selection_menu_item<S: 'static>(mut self, id: impl Into<String>, title: impl Into<String>, f: impl Fn(&mut S, &crate::TextSelection, &mut Tx) + 'static) -> Self {
+        self.handlers.selection_menu.push((id.into(), title.into(), Rc::new(move |s, sel, tx| f(downcast::<S>(s), sel, tx))));
+        self
+    }
+    /// Runs with a highlight's key when a click (a primary press and release that selected
+    /// nothing) lands on a keyed [`TextHighlight`](crate::TextHighlight) of [`El::selectable`]
+    /// text inside this element: a comment's highlight opening the comment. The nearest such
+    /// element hears it. Highlights stay paint-only; the text keeps taking the press.
+    pub fn on_highlight_press<S: 'static>(mut self, f: impl Fn(&mut S, &str, &mut Tx) + 'static) -> Self {
+        self.handlers.on_highlight_press = Some(Rc::new(move |s, key, tx| f(downcast::<S>(s), key, tx)));
+        self
+    }
     /// Draws and lays out, but the pointer and keyboard pass through this element and
     /// everything inside it, as with HTML's `inert`: a press, hover, scroll, drop or tooltip
     /// goes to whatever is under it (an ancestor or an element drawn below), along with that
@@ -459,6 +476,16 @@ impl El {
             let at = t.uncopied.partition_point(|r| (r.0 as usize) < range.start);
             t.uncopied.insert(at, (range.start as u32, range.end as u32));
         }
+        self
+    }
+    /// Where this text's bytes came from in a document it was rendered from (a Markdown
+    /// source, say): `(source range, content range)` pairs, sorted by content. A pair of equal
+    /// lengths maps byte for byte; another (an entity, an escaped character) maps as a whole. A
+    /// selection reports the source bytes of what it selected here as
+    /// [`SelectedText::source`](crate::SelectedText::source), so a comment can keep its exact
+    /// place in the document and highlight it again.
+    pub fn source_map(mut self, map: impl Into<std::rc::Rc<[(std::ops::Range<usize>, std::ops::Range<usize>)]>>) -> Self {
+        if let Some(t) = &mut self.text { t.source_map = Some(map.into()); }
         self
     }
     /// The selection highlight of [`El::selectable`] text or a text field, drawn alike for both.

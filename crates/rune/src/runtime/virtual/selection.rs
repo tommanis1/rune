@@ -201,7 +201,8 @@ pub(super) fn offscreen_piece(t: &OffscreenText, range: Range<usize>, base: Opti
     };
     let whole = !range.is_empty() && len > 0 && range.start <= full_a && range.end >= full_b;
     let text = t.spec.copy_slice(range.start as u32, range.end as u32).unwrap_or_default();
-    SelectedText { path, key: t.key.clone(), range, len, whole, text }
+    let source = t.spec.source_map.as_deref().map_or_else(Vec::new, |m| super::text_selection::to_source(m, range.clone()));
+    SelectedText { path, key: t.key.clone(), range, len, whole, text, source }
 }
 
 impl<S: 'static> Runtime<S> {

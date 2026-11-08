@@ -433,6 +433,10 @@ impl std::fmt::Debug for PickRead {
 
 /// What an `El::selection_copy` element copies for a selection inside it.
 pub(crate) type SelectionCopy = Rc<dyn Fn(&crate::TextSelection) -> Option<String>>;
+/// One `El::selection_menu_item`: its id, its title, and what picking it runs.
+pub(crate) type SelectionMenuItem = (String, String, Rc<dyn Fn(crate::states::States<'_>, &crate::TextSelection, &mut Tx)>);
+/// `El::on_highlight_press`: the key of the highlight pressed.
+pub(crate) type HighlightPressFn = Rc<dyn Fn(crate::states::States<'_>, &str, &mut Tx)>;
 /// `El::on_selection_change`.
 pub(crate) type SelectionChangeFn = Rc<dyn Fn(crate::states::States<'_>, &crate::SelectionChange, &mut Tx)>;
 
@@ -657,6 +661,7 @@ pub fn text(content: impl Into<String>) -> El {
         selectable: false,
         selection: DEFAULT_SELECTION,
         uncopied: Vec::new(),
+        source_map: None,
         rings: Vec::new(),
         strikes: Vec::new(),
         highlights: Vec::new(),

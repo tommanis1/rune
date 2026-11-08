@@ -312,6 +312,8 @@ fn same_handlers(
         on_scroll_offset,
         selection_copy,
         on_selection_change,
+        selection_menu,
+        on_highlight_press,
         cursor,
         press_scale,
         #[cfg(debug_assertions)]
@@ -359,6 +361,9 @@ fn same_handlers(
         && opt_rc_eq(&a.on_scroll_offset, on_scroll_offset)
         && opt_rc_eq(&a.selection_copy, selection_copy)
         && opt_rc_eq(&a.on_selection_change, on_selection_change)
+        && a.selection_menu.len() == selection_menu.len()
+        && a.selection_menu.iter().zip(selection_menu).all(|(x, y)| x.0 == y.0 && x.1 == y.1 && Rc::ptr_eq(&x.2, &y.2))
+        && opt_rc_eq(&a.on_highlight_press, on_highlight_press)
         && a.cursor == *cursor
         && a.press_scale == *press_scale
 }

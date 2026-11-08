@@ -122,9 +122,11 @@ pub(super) fn margins(b: &Block, s: &MarkdownStyle) -> (f32, f32) {
 /// tabs in a monospace `style` to four-column stops itself; in any other family it draws a tab
 /// as one space, so each tab is padded with uncopied spaces to the next stop: lines line up and a
 /// copy still gets the tab.
-fn tabbed(code: &str, mut spans: Vec<Span>, mut highlights: Vec<TextHighlight>, style: TextStyle) -> El {
+/// `map`, when given, is the source map of `code` (see [`El::source_map`]), shifted with it.
+fn tabbed(code: &str, mut spans: Vec<Span>, mut highlights: Vec<TextHighlight>, style: TextStyle, map: Option<Vec<(Range<usize>, Range<usize>)>>) -> El {
     if !code.contains('\t') || matches!(style.family, Family::Mono | Family::SystemMono) {
-        return rich(code.to_owned(), spans).text_highlights(highlights);
+        let el = rich(code.to_owned(), spans).text_highlights(highlights);
+        return match map { Some(m) => el.source_map(m), None => el };
     }
     let mut shown = String::with_capacity(code.len() + code.len() / 8);
     // (source byte, shown byte, pad, padding so far including this tab's)
@@ -154,7 +156,15 @@ fn tabbed(code: &str, mut spans: Vec<Span>, mut highlights: Vec<TextHighlight>, 
         let r = hl.range();
         *hl = hl.clone().with_range(shift(r.start as u32) as usize..shift(r.end as u32) as usize);
     }
-    tabs.iter().fold(rich(shown, spans).text_highlights(highlights), |el, t| el.uncopied(t.1 + 1..t.1 + 1 + t.2))
+    let el = tabs.iter().fold(rich(shown, spans).text_highlights(highlights), |el, t| el.uncopied(t.1 + 1..t.1 + 1 + t.2));
+    match map {
+        // A tab's padding maps to nothing: each piece shifts as a whole, so it never spans one.
+        Some(m) => el.source_map(m.into_iter().map(|(src, out)| {
+            let end = shift(out.end as u32 - 1) as usize + 1;
+            (src, shift(out.start as u32) as usize..end)
+        }).collect::<Vec<_>>()),
+        None => el,
+    }
 }
 
 impl Renderer {
@@ -232,6 +242,11 @@ impl Renderer {
         out
     }
 
+    /// `map`'s pairs, for [`El::source_map`] on a selectable text (none when it isn't).
+    fn source_pairs(&self, map: Option<&SpanMap>) -> Option<Vec<(Range<usize>, Range<usize>)>> {
+        map.filter(|_| self.selectable).map(|m| m.0.clone())
+    }
+
     /// `e`, a text, selectable when the markdown is (after its links, so it shows the I-beam).
     pub(super) fn select(&self, e: El) -> El {
         if self.selectable { e.selectable(true).selection_color(self.s.selection) } else { e }
@@ -246,6 +261,7 @@ impl Renderer {
             }
         }
         e = e.text_highlights(self.text_highlights_for(&inl.text, map));
+        if let Some(m) = self.source_pairs(map) { e = e.source_map(m); }
         let e = self.select(self.wire_link(self.link_icons(e, inl), inl));
         if !self.selectable { return e; }
         inl.spans.iter().filter(|s| matches!(s.2, Style::CodePad)).fold(e, |e, s| e.uncopied(s.0..s.1))
@@ -322,7 +338,7 @@ impl Renderer {
             None => (s.code_block_fill, s.code_block_border, s.code_text.unwrap_or(s.text)),
         };
         let spans = if shell.is_some() { Vec::new() } else { self.syntax_spans(code, source) };
-        let body = self.with_reveal(tabbed(code, spans, highlights, s.code_block).font(s.code_block).color(ink));
+        let body = self.with_reveal(tabbed(code, spans, highlights, s.code_block, self.source_pairs(map)).font(s.code_block).color(ink));
         let frame = col().role("code").w_full().radius(6.0).fill(fill).border(0.5, border);
         if self.scroll_wide {
             // The text sizes to its longest line inside the viewport, which scrolls under the
@@ -364,6 +380,14 @@ impl Renderer {
                     (a < b).then(|| h.clone().with_range((a - line_start)..(b - line_start)))
                 })
                 .collect();
+            let line_map = self.source_pairs(map).map(|m| {
+                m.into_iter().filter_map(|(src, out)| {
+                    let (a, b) = (out.start.max(line_start), out.end.min(line_end));
+                    // a piece wider than the line (an entity, say) keeps its whole source
+                    let src = if src.len() == out.len() { src.start + (a - out.start)..src.start + (b - out.start) } else { src };
+                    (a < b).then(|| (src, a - line_start..b - line_start))
+                }).collect::<Vec<_>>()
+            });
             line_start = line_end + 1;
             let line = line.strip_suffix('\r').unwrap_or(line);
             let header = ["@@", "diff ", "index ", "--- ", "+++ "].iter().any(|p| line.starts_with(p));
@@ -378,7 +402,7 @@ impl Renderer {
                 .key(format!("l{n}"))
                 .w_full()
                 .px(s.code_block_pad[0])
-                .child(self.select(self.with_reveal(tabbed(shown, Vec::new(), line_hl, s.code_block).font(s.code_block).color(color).wrap()).w_full()));
+                .child(self.select(self.with_reveal(tabbed(shown, Vec::new(), line_hl, s.code_block, line_map).font(s.code_block).color(color).wrap()).w_full()));
             if let Some(t) = tint {
                 r = r.fill(t);
             }

@@ -48,6 +48,8 @@ pub struct TextSpec {
     pub(crate) selection: Color,
     /// See [`El::uncopied`](crate::El::uncopied): byte ranges of `content`, sorted.
     pub(crate) uncopied: Vec<(u32, u32)>,
+    /// See [`El::source_map`](crate::El::source_map): `(source range, content range)` pairs.
+    pub(crate) source_map: Option<std::rc::Rc<[(std::ops::Range<usize>, std::ops::Range<usize>)]>>,
     /// Inset border rings `(start, end, color, width)` on rounded span backgrounds.
     pub(crate) rings: Vec<(u32, u32, Color, f32)>,
     /// Strikethrough byte ranges `(start, end, color)` of `content`.

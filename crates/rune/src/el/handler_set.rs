@@ -3,7 +3,8 @@
 use crate::cold::Empty;
 use crate::el::{
     AtBottomFn, Cursor, DragEndFn, DragFn, DragOutFn, DropSpec, LayoutFn, LayoutTxFn, ModalSpec,
-    PasteFn, PointerFn, PressFn, ScrollOffsetFn, SelectionChangeFn, SelectionCopy, VisibleRowsFn,
+    HighlightPressFn, PasteFn, PointerFn, PressFn, ScrollOffsetFn, SelectionChangeFn, SelectionCopy,
+    SelectionMenuItem, VisibleRowsFn,
     WindowFocusFn,
 };
 
@@ -43,6 +44,10 @@ pub(crate) struct Handlers {
     pub on_scroll_offset: Option<ScrollOffsetFn>,
     pub selection_copy: Option<SelectionCopy>,
     pub on_selection_change: Option<SelectionChangeFn>,
+    /// `El::selection_menu_item`: items this element adds to the selection's Copy menu.
+    pub selection_menu: Vec<SelectionMenuItem>,
+    /// `El::on_highlight_press`: a click on a keyed highlight of selectable text inside.
+    pub on_highlight_press: Option<HighlightPressFn>,
     pub cursor: Option<Cursor>,
     pub press_scale: Option<f32>,
     /// Debug builds: where the app set the handlers the commit warnings name.
@@ -123,6 +128,8 @@ impl Empty for Handlers {
         on_scroll_offset: None,
         selection_copy: None,
         on_selection_change: None,
+        selection_menu: Vec::new(),
+        on_highlight_press: None,
         cursor: None,
         press_scale: None,
         #[cfg(debug_assertions)]

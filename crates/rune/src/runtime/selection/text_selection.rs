@@ -39,6 +39,7 @@ pub struct SelectedText {
     pub(super) len: usize,
     pub(super) whole: bool,
     pub(super) text: String,
+    pub(super) source: Vec<Range<usize>>,
 }
 
 impl SelectedText {
@@ -60,6 +61,31 @@ impl SelectedText {
     pub fn is_whole(&self) -> bool { self.whole }
     /// The selected part as copying takes it.
     pub fn text(&self) -> &str { &self.text }
+    /// The selected part as byte ranges of the document the text was rendered from, through
+    /// its [`El::source_map`](crate::El::source_map), sorted; empty without one or when none
+    /// of it is selected. Markup between mapped bytes (`**`, a link's URL) is left out, so a
+    /// selection across formatting gives several ranges.
+    pub fn source(&self) -> &[Range<usize>] { &self.source }
+}
+
+/// `sel`, bytes of a text's content, as bytes of its source through `map` (see
+/// [`El::source_map`](crate::El::source_map)).
+pub(crate) fn to_source(map: &[(Range<usize>, Range<usize>)], sel: Range<usize>) -> Vec<Range<usize>> {
+    let mut out: Vec<Range<usize>> = Vec::new();
+    if sel.is_empty() { return out; }
+    for (src, shown) in map {
+        if shown.end <= sel.start || shown.start >= sel.end || shown.is_empty() { continue; }
+        let r = if src.len() == shown.len() {
+            sel.start.max(shown.start) - shown.start + src.start..sel.end.min(shown.end) - shown.start + src.start
+        } else {
+            src.clone()
+        };
+        match out.last_mut() {
+            Some(last) if last.end >= r.start => last.end = last.end.max(r.end),
+            _ => out.push(r),
+        }
+    }
+    out
 }
 
 /// What an [`El::on_selection_change`](crate::El::on_selection_change) element hears.

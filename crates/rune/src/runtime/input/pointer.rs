@@ -207,6 +207,7 @@ impl<S: 'static> Runtime<S> {
         for path in within {
             self.queue.push(Action::PressWithin(path));
         }
+        self.mark_down(x, y);
         self.press_selection(target, x, y);
         // Inside a draggable row, dragging drags the row; clicks still select words and lines.
         if target.is_some_and(|t| self.nodes[t].handlers.on_drag.is_some() || self.nodes[t].handlers.drag_out.is_some()) {
@@ -315,6 +316,7 @@ impl<S: 'static> Runtime<S> {
         self.text_sel.dragging = false;
         let input_capture = self.input_click.end_press();
         self.end_press_repeat();
+        self.mark_up(x, y, selected);
         let Some((path, d)) = self.capture.take() else { return };
         let button = std::mem::take(&mut self.capture_button);
         self.refresh_hover_within();

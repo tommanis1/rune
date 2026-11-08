@@ -379,3 +379,31 @@ fn link_help_gives_each_link_its_own_tooltip() {
         (Some("notes".into()), None),
     ]);
 }
+
+#[test]
+fn a_selection_in_selectable_markdown_reports_its_source_bytes() {
+    const SRC: &str = "Hello **world** from `rune`.";
+    #[derive(Default)]
+    struct State { source: Vec<std::ops::Range<usize>> }
+    fn view(_: &State, _: &mut rune::Cx<State>) -> El {
+        let style = MarkdownStyle::neutral(true);
+        col().w_full().h_full()
+            .on_selection_change(|s: &mut State, ch: &rune::SelectionChange, _: &mut rune::Tx| {
+                if let Some(sel) = ch.selection() {
+                    s.source = sel.texts().iter().flat_map(|t| t.source().iter().cloned()).collect();
+                }
+            })
+            .child(Markdown::new(SRC).selectable(true).render(&style))
+    }
+    let mut rt = rune::Runtime::new(State::default(), view, (480.0, 200.0), rune::Env::new(true, 1.0));
+    rt.frame(0.0);
+    let (x, y) = rt.find("b0").unwrap();
+    for _ in 0..3 {
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+    }
+    rt.frame(0.0);
+    let got: String = rt.state.source.iter().map(|r| &SRC[r.clone()]).collect();
+    assert_eq!(got, "Hello world from rune.", "{:?}", rt.state.source);
+    assert!(rt.state.source.len() > 1, "the markers are left out");
+}

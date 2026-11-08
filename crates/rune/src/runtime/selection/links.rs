@@ -12,6 +12,9 @@ pub(super) struct LinkState {
     focus: Option<usize>,
     /// The link a secondary press began on, in the captured text.
     secondary: Option<usize>,
+    /// The keyed highlight a primary press began on: (text path, highlight index), when an
+    /// element around it hears highlight presses (`El::on_highlight_press`).
+    mark: Option<(String, usize)>,
 }
 
 /// Where node `n`'s text starts inside its border box `rect` (points, x0 y0 x1 y1), its text
@@ -220,6 +223,34 @@ impl<S: 'static> Runtime<S> {
         if p == path && self.capture_inside && self.link_at(i, x, y) == Some(k) {
             self.queue.push(Action::Link(p, k));
         }
+    }
+
+    /// The keyed highlight of selectable node `i` under window point (x, y), when an element
+    /// around it has `on_highlight_press`.
+    fn mark_at(&self, i: usize, x: f32, y: f32) -> Option<usize> {
+        let spec = self.nodes[i].text.as_ref().filter(|t| t.highlights.iter().any(|h| h.key.is_some()))?;
+        std::iter::successors(Some(i), |&p| self.nodes[p].parent).find(|&p| self.nodes[p].handlers.on_highlight_press.is_some())?;
+        let (rect, x, y) = self.unturned_box_and_point(i, x, y);
+        self.highlight_boxes(i, rect).into_iter()
+            .find(|&(k, r)| spec.highlights[k].key.is_some() && contains(r, x, y)).map(|(k, _)| k)
+    }
+
+    /// Primary pointer down: remember the keyed highlight it began on.
+    pub(super) fn mark_down(&mut self, x: f32, y: f32) {
+        self.links.mark = self.selectable_at(x, y).and_then(|i| Some((self.nodes[i].path.clone(), self.mark_at(i, x, y)?)));
+    }
+
+    /// Primary pointer up: a click that began and ends on the same keyed highlight, selecting
+    /// nothing, is heard by the nearest `on_highlight_press` around its text.
+    pub(super) fn mark_up(&mut self, x: f32, y: f32, selected: bool) {
+        let Some((p, k)) = self.links.mark.take() else { return };
+        if selected { return; }
+        let Some(i) = self.selectable_at(x, y).filter(|&i| self.nodes[i].path == p) else { return };
+        if self.mark_at(i, x, y) != Some(k) { return; }
+        let Some(key) = self.nodes[i].text.as_ref().and_then(|t| t.highlights[k].key.clone()) else { return };
+        let Some(h) = std::iter::successors(Some(i), |&q| self.nodes[q].parent).find(|&q| self.nodes[q].handlers.on_highlight_press.is_some()) else { return };
+        let path = self.nodes[h].path.clone();
+        self.queue.push(Action::HighlightPress(path, key));
     }
 
     /// Runs the `on_link` handler of node `path` for link `k`.
