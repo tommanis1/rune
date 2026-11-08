@@ -737,10 +737,13 @@ impl<S: 'static> Runtime<S> {
         let mut copy = crate::PopupItem::new("copy", "Copy").enabled(text.is_some());
         // The primary modifier, as the copy key handler takes it: ⌘C on macOS, Ctrl+C elsewhere.
         if let Ok(shortcut) = "mod+c".parse::<crate::Shortcut>() { copy = copy.key_equivalent(shortcut); }
-        // The app's own items (El::selection_menu_item), the nearest element's first.
-        let extra: Vec<crate::el::SelectionMenuItem> = std::iter::successors(Some(i), |&p| self.nodes[p].parent)
-            .flat_map(|p| self.nodes[p].handlers.selection_menu.iter().cloned())
-            .collect();
+        // The app's own items (El::selection_menu_item), the nearest element's first; of an id, the nearest's.
+        let mut extra: Vec<crate::el::SelectionMenuItem> = Vec::new();
+        for p in std::iter::successors(Some(i), |&p| self.nodes[p].parent) {
+            for item in &self.nodes[p].handlers.selection_menu {
+                if !extra.iter().any(|e| e.0 == item.0) { extra.push(item.clone()); }
+            }
+        }
         let selection = self.selection_snapshot();
         let mut menu = crate::PopupMenu::new().item(copy);
         for (id, title, _) in &extra {

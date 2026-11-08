@@ -442,7 +442,8 @@ impl El {
         self
     }
     /// Adds an item titled `title` to the menu a secondary click on [`El::selectable`] text
-    /// inside this element opens, after Copy (the nearest element's items first). Picking it
+    /// inside this element opens, after Copy (the nearest element's items first; of an id, only the
+    /// nearest element's, so a card inside a page can take the page's Comment over). Picking it
     /// runs `f` with the selection as the menu opened on it, the word under the pointer when
     /// the click was outside the selection. For an app's own actions on selected text, such
     /// as Comment. Disabled while nothing is selected.

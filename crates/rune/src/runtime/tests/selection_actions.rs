@@ -4,7 +4,7 @@
 use super::*;
 
 #[derive(Default)]
-struct State { picked: Vec<(String, Vec<std::ops::Range<usize>>)>, marks: Vec<String> }
+struct State { picked: Vec<(String, Vec<std::ops::Range<usize>>)>, marks: Vec<String>, inner: u32 }
 
 // "aaaa bbbb" rendered from "**aaaa** bbbb": the bold markers draw nothing.
 fn view(_: &State, _: &mut Cx<State>) -> El {
@@ -14,6 +14,8 @@ fn view(_: &State, _: &mut Cx<State>) -> El {
             s.picked.push((sel.text().to_owned(), source));
         })
         .on_highlight_press(|s: &mut State, key: &str, _: &mut Tx| s.marks.push(key.to_owned()))
+        .child(col().key("inner").selection_menu_item("comment", "Comment", |s: &mut State, _: &crate::TextSelection, _: &mut Tx| s.inner += 1)
+            .child(crate::text("cccc").key("u").font(crate::TextStyle::new(16.0, 400.0)).selectable(true)))
         .child(crate::text("aaaa bbbb").key("t").font(crate::TextStyle::new(16.0, 400.0)).selectable(true)
             .source_map(vec![(2..6, 0..4), (8..13, 4..9)])
             .text_highlight(crate::TextHighlight::new(5..9, crate::oklch(0.9, 0.1, 90.0)).key("hl")))
@@ -42,6 +44,17 @@ fn the_selection_menu_offers_the_apps_items_with_the_selections_source() {
     rt.resolve_popup(Some("app:comment")).unwrap();
     rt.frame(0.0);
     assert_eq!(rt.state.picked, [("aaaa bbbb".to_owned(), vec![2..6, 8..13])], "the bold markers are left out");
+
+    // inside the inner element, its own Comment takes the outer one's place
+    let (_, y) = rt.find("u").unwrap();
+    rt.secondary_down(3.0, y);
+    rt.secondary_up(3.0, y);
+    rt.frame(0.0);
+    let menu = rt.popup_menu().expect("the selection menu").clone();
+    assert_eq!(format!("{menu:?}").matches("\"app:comment\"").count(), 1, "{menu:?}");
+    rt.resolve_popup(Some("app:comment")).unwrap();
+    rt.frame(0.0);
+    assert_eq!((rt.state.inner, rt.state.picked.len()), (1, 1));
 }
 
 #[test]
