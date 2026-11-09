@@ -37,6 +37,10 @@ pub(super) struct Win {
     /// `RedrawRequested` to a surface the compositor isn't showing (screen off, other
     /// workspace) and says nothing else; the timer stays due and would spin the loop.
     pub(super) asked: Option<Instant>,
+    /// The IME cursor area last given the window, sent again only when it moves (or the IME is
+    /// turned back on): on Wayland each one makes the input method answer with an empty
+    /// preedit, which a frame per answer turned into an edit every frame (9 Nov).
+    pub(super) ime_sent: Option<[f32; 4]>,
     /// The last frame presented, while the window rests.
     pub(super) presented: Option<Presented>,
     /// Until when the window keeps presenting every refresh after a change (`STEADY`).

@@ -289,7 +289,7 @@ impl<S: 'static> Host<S> {
         }
         self.secure_input.set(false);
         self.ime_allowed = false;
-        if let Some(w) = &self.win { w.window.set_ime_allowed(false); }
+        if let Some(w) = &mut self.win { w.window.set_ime_allowed(false); w.ime_sent = None; }
         self.rt.set_live_visible(false);
         self.rt.cancel_timer_frame();
         self.popup.cancel(&mut self.rt);

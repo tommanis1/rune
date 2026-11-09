@@ -27,6 +27,9 @@ impl<S: 'static> Runtime<S> {
     /// composition the app has open ends there even after a field took focus, and the input
     /// method turning on or off is only the app's to hear.
     pub(super) fn run_ime(&mut self, ev: Ime, one: &mut Tx) -> bool {
+        // An empty preedit with nothing being composed changes nothing; the input method sends
+        // one for each cursor area it is given (Wayland), and it must not commit a frame.
+        if matches!(&ev, Ime::Preedit(s, _) if s.is_empty()) && !self.app_ime.composing() && !self.composing() { return false; }
         let app = self.app_ime.composing() || matches!(ev, Ime::Enabled | Ime::Disabled) || self.focused_input().is_none();
         let active = self.composing() || matches!(&ev, Ime::Preedit(s, _) | Ime::Commit(s) if !s.is_empty());
         let ran = if app { self.app_ime_event(&ev, one) } else { self.with_focused(|e| e.ime(&ev), one) };

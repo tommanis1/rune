@@ -372,6 +372,7 @@ impl<S: 'static> Host<S> {
                     rt.cancel_composition();
                     l.window.set_ime_allowed(false);
                     self.ime_allowed = false;
+                    l.ime_sent = None;
                     // A minimized or occluded window skips redraw.
                     l.apply_cursor(rt, false);
                 } else if rt.stale() {
@@ -384,6 +385,7 @@ impl<S: 'static> Host<S> {
                         self.ime_allowed = ime_allowed;
                     }
                     if let Some(a) = rt.ime_area {
+                        l.ime_sent = Some(a);
                         l.window.set_ime_cursor_area(
                             LogicalPosition::new(a[0] as f64, a[1] as f64),
                             LogicalSize::new(a[2] as f64, a[3] as f64),

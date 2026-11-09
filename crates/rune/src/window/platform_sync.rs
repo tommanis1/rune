@@ -14,6 +14,7 @@ pub(super) fn sync_platform<S: 'static>(l: &mut Win, rt: &mut Runtime<S>, secure
         l.window.set_ime_allowed(false);
         l.window.set_ime_allowed(ime_allowed);
         *ime = ime_allowed;
+        l.ime_sent = None;
     }
     l.apply_cursor(rt, focused);
     #[cfg(target_os = "macos")]
@@ -22,7 +23,8 @@ pub(super) fn sync_platform<S: 'static>(l: &mut Win, rt: &mut Runtime<S>, secure
     #[cfg(target_os = "windows")]
     if focused { crate::platform::win32::dark_mode::menus(rt.backdrop_dark().unwrap_or(rt.env.system_dark)); }
     clipboard.flush(rt);
-    if let Some(a) = rt.ime_area {
+    if let Some(a) = rt.ime_area && l.ime_sent != Some(a) {
+        l.ime_sent = Some(a);
         l.window.set_ime_cursor_area(
             LogicalPosition::new(a[0] as f64, a[1] as f64),
             LogicalSize::new(a[2] as f64, a[3] as f64),

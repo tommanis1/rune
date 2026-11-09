@@ -214,6 +214,7 @@ impl<S: 'static> Host<S> {
             alpha,
             quiet: false,
             asked: None,
+            ime_sent: None,
             presented: None,
             #[cfg(target_os = "windows")]
             steady_until: None,
