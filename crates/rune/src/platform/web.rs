@@ -10,6 +10,8 @@ use super::web_math;
 /// The overscan a page's canvas carries above and below the window, in CSS points: the distance
 /// the browser's compositor can scroll before Rune has to draw a new band.
 const SKIRT: f32 = 256.0;
+#[cfg(feature = "embedded-fonts")]
+mod full_faces;
 mod input;
 mod page;
 pub(crate) mod platform;
@@ -390,6 +392,7 @@ impl<S: 'static> ApplicationHandler<Wake> for Browser<S> {
             for bytes in fonts { app.spec.fonts = crate::app::with_font(app.spec.fonts, bytes); }
             let compositor = app.compositor.take();
             let (on_focus, modifier_keys, srgb_blend) = (app.on_focus, app.modifier_keys, app.srgb_blend);
+            let on_mods = app.on_mods;
             let (font_smoothing, fit_height) = (app.font_smoothing, app.fit_content_height);
             let tab_visits_controls = app.tab_visits_controls;
             let playground = app.playground.take();
@@ -434,6 +437,7 @@ impl<S: 'static> ApplicationHandler<Wake> for Browser<S> {
                 }
             }
             rt.on_focus = on_focus;
+            rt.on_mods = on_mods;
             rt.set_modifier_keys(modifier_keys);
             rt.set_tab_visits_controls(tab_visits_controls);
             rt.set_srgb_blend(srgb_blend);
@@ -554,6 +558,11 @@ impl<S: 'static> ApplicationHandler<Wake> for Browser<S> {
                 if !r.presented {
                     r.presented = true;
                     r.input.presented();
+                    #[cfg(feature = "embedded-fonts")]
+                    {
+                        let proxy = self.proxy.clone();
+                        full_faces::fetch(move || { let _ = proxy.send_event(Wake::App); });
+                    }
                 }
                 if r.rt.shell_request.take().is_some() { self.end(event_loop); return; }
                 if animating || r.rt.has_pending_input() || r.rt.live_pending() || r.compositor.as_ref().is_some_and(|c| c.animating()) {
@@ -573,7 +582,7 @@ impl<S: 'static> ApplicationHandler<Wake> for Browser<S> {
                 if let Some(window) = &self.window { window.request_redraw(); }
                 ControlFlow::Wait
             }
-            Some(deadline) => ControlFlow::WaitUntil(r.rt.wall_start.unwrap() + Duration::from_secs_f64(deadline.max(0.0))),
+            Some(deadline) => ControlFlow::WaitUntil(crate::time::for_winit(r.rt.wall_start.unwrap() + Duration::from_secs_f64(deadline.max(0.0)))),
             None => ControlFlow::Wait,
         });
     }

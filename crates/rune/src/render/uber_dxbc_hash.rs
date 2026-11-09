@@ -1,5 +1,5 @@
-// Written by `RUNE_REGENERATE_DXBC=1 cargo test -p rune --lib uber_dxbc_is_fresh` on Windows.
-pub(super) const UBER_DXBC_WGSL_BLAKE3: &str = "9646eb67be407112297aa25769b4dd09f5937c733d574453e41421b0d7f4ea92";
-pub(super) const UBER_DXBC_ABI_FNV64: u64 = 0xb53b72e11574bdc1;
+// Written by `cargo run -p rune --example regen_dxbc` (or `RUNE_REGENERATE_DXBC=1 cargo test -p rune --lib uber_dxbc_is_fresh`) on Windows.
+pub(super) const UBER_DXBC_WGSL_BLAKE3: &str = "1850cd3d229f2fa619cfa6bfb40fe2ea99708648d91679fd0918432102f82ef6";
+pub(super) const UBER_DXBC_ABI_FNV64: u64 = 0x1c1cb41ab8da9177;
 #[cfg(test)]
-pub(super) const UBER_DXBC_HLSL_BLAKE3: &str = "2820224de46566062fed33e4daa02acbdb42b92b97b31295d7da55c5f02ddbf5";
+pub(super) const UBER_DXBC_HLSL_BLAKE3: &str = "9f0d600a253d9087da807a28bcf144b6d483cf60704fbfbf623e1072d0c4ce9c";

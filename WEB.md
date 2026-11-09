@@ -18,11 +18,13 @@ Serve the entire output folder over HTTPS, including `snippets/`. A local HTTP s
 `localhost` also works for development. The host must serve `.wasm` as `application/wasm`.
 No application server, SharedArrayBuffer, COOP or COEP headers are required.
 `--opt` additionally runs an installed `wasm-opt -Oz`; the default build does not need it.
+A release build drops the wasm's function-name section, so a panic's stack shows offsets
+instead of Rust names; `--names` keeps it for profiling, and `--dev` builds always keep it.
 The script prints the raw and gzip wasm sizes. Configure gzip or Brotli on the static host
 to get the corresponding transfer size.
 
 ```text
-usage: web-build.sh PACKAGE [--example NAME] [--out DIR] [--opt] [--dev] [--watch] [--no-html]
+usage: web-build.sh PACKAGE [--example NAME] [--out DIR] [--opt] [--dev] [--watch] [--no-html] [--names]
 ```
 
 The script builds with the toolchain's own cargo (`rustup which cargo`), not a `cargo` wrapper
@@ -89,6 +91,22 @@ selects one cdylib, or one binary if there is no cdylib. `--example NAME` select
 example. Disable Rune's `dev`, `hot` and `native-file-dialog` features on wasm. Move native
 filesystem, process and thread dependencies behind target conditions in your app too.
 Use `rune::time::Instant` for deadlines passed to Rune; it is `std::time::Instant` on native.
+
+## Luau scripts
+
+An app that hosts Luau with `rune-luau` builds for the web too: Luau's C++ compiles with
+[WASI SDK](https://github.com/WebAssembly/wasi-sdk) (33 or newer) against WASI libc, using
+WebAssembly exception handling. Unpack the SDK and point `WASI_SDK_PATH` at it; `web-build.sh`
+then sets the C and C++ compilers for the wasm target, and `rune-luau` links the SDK's C runtime
+and defines the WASI calls libc makes inside the module, so the page loads like any other
+Rune app. Luau runs as its interpreter there.
+
+```sh
+WASI_SDK_PATH=$HOME/wasi-sdk-34.0 scripts/web-build.sh luau-panel --out target/web-luau
+node examples/luau-panel/web-proof.mjs target/web-luau target/web-luau-proof
+```
+
+Browsers with exception handling run it: current Chrome, Edge, Firefox and Safari.
 
 ## Mount in a page
 
@@ -177,6 +195,9 @@ SVG (by `Content-Type` or a `.svg`/`.svgz` path) rasterizes with Rune's renderer
 asked for. Images over 8192 pixels a side are refused before their pixels are read, and a
 failed request or a cross-origin image without CORS headers resolves to `Image::error`.
 
+`Cursor::Image` sets the canvas's CSS `cursor` to the PNG at 2x (`image-set(url(blob:…) 2x)`),
+so the browser decodes it and draws it at its size in points on any display.
+
 ## Fonts and browser input
 
 Web includes Inter Regular and IBM Plex Mono Regular (the `embedded-fonts` feature). There is
@@ -190,6 +211,19 @@ For example, extend a static slice of `rune_theme_opencode::FONTS` with
 `include_bytes!("assets/NotoColorEmoji.ttf")` and the CJK fonts your app needs, then assign
 the combined slice to `spec.fonts`. Keep the theme's sans/mono family names in `spec.families`.
 Missing emoji and CJK glyphs display fallback boxes; they do not trigger font downloads.
+
+The embedded Inter is cut to Latin, Greek and Cyrillic text (Latin-1, Latin Extended-A, modern
+Greek, Cyrillic, punctuation, arrows and the Mac's key symbols), under half its size. Once the
+first frame is up the app fetches the full faces, `Inter-Regular.ttf`, `Inter-Medium.ttf` and
+`Inter-SemiBold.ttf`, from beside `app.js`; `scripts/web-build.sh` copies them there. Text the
+cut covers draws the same before and after; other text (Vietnamese, polytonic Greek, Cyrillic
+beyond Russian, Ukrainian, Belarusian, Serbian, Macedonian and Bulgarian) draws in fallback
+fonts or boxes until they arrive, and stays that way, with a console warning, on a host that
+doesn't serve them.
+
+In a Mac's browser text draws with macOS font smoothing (`FontSmoothing::On`), as Safari,
+Chrome and Firefox draw the page's own text there, and without it elsewhere, iPhone and iPad
+included. `App::font_smoothing` sets it either way.
 
 Rust supplies the hidden textarea with up to 512 UTF-16 units on each side of the selection,
 expanding for the selected range, and skips unchanged mirrors. Browser input events supply replacements; Rune validates the mirrored
@@ -246,6 +280,9 @@ and reports whether it has a WebGPU adapter. The proof checks GPU errors, idle r
 and submissions, touch
 focus and momentum, Unicode edits, a long sliding context, predictive replacement,
 composition, selection, paste, copied model text, link isolation, theme and viewport resize.
+In Chromium it also installs Playwright's fake clock after the app has started and checks that
+a touch fling waits for `clock.runFor` instead of finishing in real time: Rune reads the page's
+current `performance.now()` on every frame, so a capture can step it frame by frame.
 The `?input-proof` fixture adds password input, Tab/Escape focus, mobile Enter, recomposition,
 same-field focus stability, continuous-input coalescing and visibility regression checks.
 Its mobile DPR check exercises the Safari-style CSS-size fallback because Chromium device

@@ -72,6 +72,16 @@ async function readImage(url, maxSide) {
     const type = (response.headers.get('content-type') || blob.type).split(';')[0].trim().toLowerCase();
     const path = response.url ? new URL(response.url).pathname : '';
     if (type === 'image/svg+xml' || /\.svgz?$/i.test(path)) return [0, 0, new Uint8Array(await blob.arrayBuffer())];
+    return blobRgba(blob, maxSide);
+}
+
+export async function decodeImage(bytes, maxSide) {
+    const reply = await blobRgba(new Blob([bytes]), maxSide);
+    await nextTask();
+    return reply;
+}
+
+async function blobRgba(blob, maxSide) {
     const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image', colorSpaceConversion: 'default' });
     try {
         const { width, height } = bitmap;
@@ -86,6 +96,31 @@ async function readImage(url, maxSide) {
     }
 }
 
+export function objectUrl(bytes, type) {
+    return URL.createObjectURL(new Blob([bytes], { type }));
+}
+
+export function revokeUrl(url) {
+    URL.revokeObjectURL(url);
+}
+
+// Sets `canvas`'s CSS cursor, or clears it when `css` is empty. Safari reads `image-set()` in a
+// cursor only with its `-webkit-` prefix.
+export function setCursor(canvas, css) {
+    if (!css) return void canvas.style.removeProperty('cursor');
+    canvas.style.cursor = css;
+    if (!canvas.style.cursor) canvas.style.cursor = `-webkit-${css}`;
+}
+
+export function browserPlatform() {
+    const nav = globalThis.navigator;
+    return nav ? (nav.userAgentData?.platform || nav.platform || '') : undefined;
+}
+
+export function touchPoints() {
+    return globalThis.navigator?.maxTouchPoints || 0;
+}
+
 export function nextTask() {
     return globalThis.scheduler?.yield ? globalThis.scheduler.yield() : new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -94,6 +129,10 @@ export async function fetchBytes(url) {
     const response = await fetch(new URL(url, document.baseURI));
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return new Uint8Array(await response.arrayBuffer());
+}
+
+export function resolveUrl(url, base) {
+    return new URL(url, base).href;
 }
 
 export function viewport(canvas, callback, embedded) {

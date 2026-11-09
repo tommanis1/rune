@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run from the app's Cargo workspace. Produces a static, HTTPS-hostable folder.
 set -euo pipefail
-usage="usage: web-build.sh PACKAGE [--example NAME] [--out DIR] [--opt] [--dev] [--watch] [--no-html]"
+usage="usage: web-build.sh PACKAGE [--example NAME] [--out DIR] [--opt] [--dev] [--watch] [--no-html] [--names]"
 package=${1:?$usage}
 shift
 example=
@@ -10,6 +10,7 @@ opt=false
 dev=false
 watch=false
 html=true
+names=false
 while (($#)); do
     case "$1" in
         --example) example=${2:?--example needs a name}; shift 2 ;;
@@ -18,6 +19,7 @@ while (($#)); do
         --dev) dev=true; shift ;;
         --watch) watch=true; shift ;;
         --no-html) html=false; shift ;;
+        --names) names=true; shift ;;
         -h|--help) echo "$usage"; exit 0 ;;
         *) echo "unknown option: $1" >&2; echo "$usage" >&2; exit 2 ;;
     esac
@@ -29,6 +31,19 @@ cargo=${CARGO:-$(rustup which cargo 2>/dev/null || command -v cargo)}
 # rustc it runs too: build scripts compile outside the repo, where rust-toolchain.toml can't reach.
 if [[ -z ${RUSTUP_TOOLCHAIN:-} ]] && toolchain=$(rustup show active-toolchain 2>/dev/null); then
     export RUSTUP_TOOLCHAIN=${toolchain%% *}
+fi
+# C and C++ dependencies (rune-luau's Luau) build for the web with WASI SDK's clang against WASI
+# libc, using WebAssembly exception handling. Set WASI_SDK_PATH to an unpacked WASI SDK 33 or
+# newer; rune-luau's build script links the SDK's libc and C++ runtime from it.
+if [[ -n ${WASI_SDK_PATH:-} ]]; then
+    exe=
+    [[ -f $WASI_SDK_PATH/bin/clang.exe ]] && exe=.exe
+    export CC_wasm32_unknown_unknown="$WASI_SDK_PATH/bin/clang$exe" \
+        CXX_wasm32_unknown_unknown="$WASI_SDK_PATH/bin/clang++$exe" \
+        AR_wasm32_unknown_unknown="$WASI_SDK_PATH/bin/llvm-ar$exe" \
+        CXXSTDLIB_wasm32_unknown_unknown=c++ \
+        CFLAGS_wasm32_unknown_unknown=--target=wasm32-wasip1 \
+        LUAU_CXXFLAGS="--target=wasm32-wasip1 -fexceptions -fwasm-exceptions -mllvm -wasm-use-legacy-eh=false"
 fi
 meta=$("$cargo" metadata --format-version 1 --no-deps)
 selection=$(python3 -c '
@@ -133,12 +148,23 @@ build_once() {
     local next="$out/.next"
     rm -rf "$next"
     mkdir -p "$next"
-    wasm-bindgen --target web --out-dir "$next" --out-name app "$artifact" || return 1
+    # A release build drops the function-name section (over 40% of an unoptimized wasm); a `--dev`
+    # build, or `--names` for profiling, keeps it so panics and profiles name their functions.
+    local bindgen=(--target web --out-dir "$next" --out-name app)
+    $dev || $names || bindgen+=(--remove-name-section)
+    wasm-bindgen "${bindgen[@]}" "$artifact" || return 1
     if $opt; then
-        wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-reference-types \
+        local keep=()
+        $names && keep=(-g)
+        wasm-opt -Oz ${keep[@]+"${keep[@]}"} --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-reference-types --enable-exception-handling \
             "$next/app_bg.wasm" -o "$next/app_bg.opt.wasm" || return 1
         mv "$next/app_bg.opt.wasm" "$next/app_bg.wasm"
     fi
+    # Rune's default fonts embed Inter cut to Latin, Greek and Cyrillic text and fetch the full faces from beside
+    # app.js once the first frame is up: copy those of the Rune this build embedded the cut from.
+    local cut
+    cut=$(tr ' ' '\n' < "${artifact%.wasm}.d" 2>/dev/null | grep -m1 '/assets/web/first/Inter-Regular\.ttf$' || true)
+    if [[ -n $cut ]]; then cp "${cut%/first/*}"/Inter-*.ttf "$next/"; fi
     local entry
     for entry in "$next"/*; do
         if [[ -d $entry ]]; then

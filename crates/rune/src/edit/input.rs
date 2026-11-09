@@ -11,7 +11,6 @@ impl TextEdit {
             return;
         }
         self.sync_invariants();
-        self.break_history_group();
         let before = self.snapshot();
         let (a, b) = self.range();
         let inserted_marks = if let Some((armed, p)) = self.pending.take()
@@ -22,7 +21,7 @@ impl TextEdit {
             self.inherited_marks_at(a)
         };
         self.apply_text_and_attr_replace((a, b), "\n", &inserted_marks, Some(block_for_new_line), soft);
-        self.record_change(before, false);
+        self.record_change(before, EditKind::LineBreak);
     }
 
     pub(super) fn set(&mut self, i: usize, extend: bool) {
@@ -76,14 +75,15 @@ impl TextEdit {
                     let (a, b) = self.range();
                     let end = if a == b { self.line_edge(layout, true) } else { b };
                     let to = if end > a { end } else if a < self.text.len() { next_char(&self.text, a) } else { a };
-                    if to > a { self.replace((a, to), "", false); }
+                    if to > a { self.replace((a, to), "", EditKind::DeleteRun); }
                     return out;
                 }
             };
             return self.key(&KeyEvent { key, mods: Mods { shift: m.shift, cmd: line, ..Mods::default() } }, layout);
         }
         if ev.is_command_chord() || ev.is_window_menu_chord() { return out; }
-        if !matches!(&ev.key, Key::Text(s) if !s.contains(['\r', '\n'])) { self.break_history_group(); }
+        // Typing, deleting and line breaks join the open undo step (`history::step`); any other key closes it.
+        if !matches!(&ev.key, Key::Text(_) | Key::Backspace | Key::Delete | Key::Enter) { self.break_history_group(); }
         // ⌘ moves to a line's edge on macOS. Elsewhere Ctrl, which also sets `cmd`, moves by
         // word as Option does on macOS; `cmd` with no Ctrl (a script) keeps the line edge.
         let word = m.alt || (m.ctrl && !cfg!(target_os = "macos"));
@@ -92,11 +92,11 @@ impl TextEdit {
             Key::Text(s) => {
                 if s.chars().any(|c| !c.is_control() || (!self.is_single_line() && matches!(c, '\n' | '\r' | '\t'))) {
                     let s = self.sanitize(s);
-                    if !s.is_empty() { self.replace(self.range(), &s, !s.contains(['\r', '\n'])); }
+                    if !s.is_empty() { self.replace(self.range(), &s, if s.contains(['\r', '\n']) { EditKind::LineBreak } else { EditKind::Text }); }
                 }
             }
             // A composition's Return and Escape are the input method's.
-            Key::Enter | Key::Escape if self.preedit.is_some() => {}
+            Key::Enter | Key::Escape if self.preedit().is_some() => {}
             Key::Enter => {
                 if self.is_single_line() {
                     out.submit = true;
@@ -104,7 +104,7 @@ impl TextEdit {
                     if m.cmd || m.ctrl {
                         out.submit = true;
                     } else {
-                        self.replace(self.range(), "\n", false);
+                        self.replace(self.range(), "\n", EditKind::LineBreak);
                     }
                 } else {
                     let (a, b) = self.range();
@@ -152,7 +152,7 @@ impl TextEdit {
             Key::Tab => {
                 if !m.cmd && !m.alt && !m.ctrl && !self.secure && !self.is_single_line() {
                     if self.active_block() == Block::Code && !m.shift {
-                        self.replace(self.range(), "\t", true);
+                        self.replace(self.range(), "\t", EditKind::Text);
                     } else if m.shift {
                         self.outdent_list();
                     } else {
@@ -165,7 +165,7 @@ impl TextEdit {
             Key::Backspace => {
                 let (a, b) = self.range();
                 if a != b || (self.is_hidden_multiline() && self.is_pristine()) {
-                    self.insert("");
+                    self.replace(self.range(), "", EditKind::Delete);
                 } else {
                     let line_idx = self.line_of_byte(a);
                     let line_range = self.line_range(line_idx);
@@ -185,7 +185,7 @@ impl TextEdit {
                                     self.set_block(Block::Paragraph);
                                 } else {
                                     let from = prev_char(&self.text, a);
-                                    self.replace((from, a), "", false);
+                                    self.replace((from, a), "", EditKind::Delete);
                                 }
                             }
                             Block::Paragraph => unreachable!(),
@@ -198,25 +198,27 @@ impl TextEdit {
                         } else {
                             prev_char(&self.text, a)
                         };
-                        self.replace((from, a), "", false);
+                        self.replace((from, a), "", if line || word { EditKind::DeleteRun } else { EditKind::Delete });
                     }
                 }
             }
             Key::Delete => {
                 let (a, b) = self.range();
                 if a != b || (self.is_hidden_multiline() && self.is_pristine()) {
-                    self.insert("");
+                    self.replace(self.range(), "", EditKind::Delete);
                 } else if a < self.text.len() {
                     let to = if word { self.next_word(a) } else { next_char(&self.text, a) };
-                    self.replace((a, to), "", false);
+                    self.replace((a, to), "", if word { EditKind::DeleteRun } else { EditKind::Delete });
                 }
             }
+            Key::Left if !line && let Some(i) = self.visual_step(layout, false, word) => self.move_h(i, m.shift),
             Key::Left => {
                 let i = if line { self.line_edge(layout, false) } else if word { self.prev_word(self.focus) } else { prev_char(&self.text, self.focus) };
                 self.move_h(i, m.shift);
             }
             Key::Right if !m.shift && !m.cmd && !m.alt && !m.ctrl && self.at_end_of_trailing_block() => self.leave_trailing_block(),
             Key::Down if !m.shift && !m.cmd && !m.alt && !m.ctrl && self.at_end_of_trailing_block() => self.leave_trailing_block(),
+            Key::Right if !line && let Some(i) = self.visual_step(layout, true, word) => self.move_h(i, m.shift),
             Key::Right => {
                 let i = if line { self.line_edge(layout, true) } else if word { self.next_word(self.focus) } else { next_char(&self.text, self.focus) };
                 self.move_h(i, m.shift);
@@ -288,7 +290,7 @@ impl TextEdit {
         let n = self.text.len();
         !self.secure
             && !self.is_single_line()
-            && self.preedit.is_none()
+            && self.preedit().is_none()
             && (self.anchor, self.focus) == (n, n)
             && matches!(self.blocks.last(), Some(Block::Code | Block::Quote))
     }
@@ -302,7 +304,39 @@ impl TextEdit {
         let n = self.text.len();
         self.pending = None;
         self.apply_text_and_attr_replace((n, n), "\n", &[], Some(Block::Paragraph), false);
-        self.record_change(before, false);
+        self.record_change(before, EditKind::Other);
+    }
+
+    /// Where Left (Right when `right`) moves the caret, by a character or a `word`, when the
+    /// text moves visually ([`CaretMotion`]): across the line as it's drawn, and at the line's
+    /// edge on the way its paragraph runs, so Left leaves a right-to-left line forward. `None`
+    /// when it moves by the logical order.
+    fn visual_step(&self, layout: Option<&Layout<Ink>>, right: bool, word: bool) -> Option<usize> {
+        use super::caret_motion::{Arrow, CaretMotion, Landing};
+        let l = layout?;
+        match CaretMotion::of(l, self.secure && !self.revealed) {
+            CaretMotion::Logical => None,
+            CaretMotion::Visual => {
+                let arrow = match (right, word) {
+                    (false, false) => Arrow::Left,
+                    (true, false) => Arrow::Right,
+                    (false, true) => Arrow::WordLeft,
+                    (true, true) => Arrow::WordRight,
+                };
+                Some(match super::caret_motion::visual(l, self.display_index(self.focus), arrow) {
+                    Landing::At(j) => self.model_index(j),
+                    Landing::Edge => {
+                        let forward = right == (crate::el::Flow::of_layout(l) == crate::el::Flow::Ltr);
+                        match (forward, word) {
+                            (true, false) => next_char(&self.text, self.focus),
+                            (true, true) => self.next_word(self.focus),
+                            (false, false) => prev_char(&self.text, self.focus),
+                            (false, true) => self.prev_word(self.focus),
+                        }
+                    }
+                })
+            }
+        }
     }
 
     fn line_edge(&self, layout: Option<&Layout<Ink>>, end: bool) -> usize {
@@ -320,19 +354,17 @@ impl TextEdit {
     }
 
     pub fn ime(&mut self, ev: &Ime) -> EditOutcome {
-        if self.secure { self.clear_preedit(); return EditOutcome::default(); }
+        if self.secure { self.cancel_composition(); return EditOutcome::default(); }
         self.sync_invariants();
         self.break_history_group();
-        match ev {
-            Ime::Preedit(s, cur) => {
-                self.preedit = if s.is_empty() { None } else { Some((s.clone(), *cur)) };
+        for effect in ime::step(&mut self.composition, ev) {
+            match effect {
+                ime::Effect::Commit(mut s) => {
+                    let clean = self.sanitize(&s);
+                    s.zeroize();
+                    self.insert(&clean);
+                }
             }
-            Ime::Commit(s) => {
-                self.preedit = None;
-                let s = self.sanitize(s);
-                self.insert(&s);
-            }
-            Ime::Enabled | Ime::Disabled => {}
         }
         EditOutcome::default()
     }
@@ -412,7 +444,7 @@ impl TextEdit {
             }
             self.pending = None;
             self.normalize_marks();
-            self.record_change(before, false);
+            self.record_change(before, EditKind::Other);
             return EditOutcome::default();
         }
 
@@ -465,7 +497,7 @@ impl TextEdit {
         }
         self.pending = None;
         self.sync_invariants();
-        self.record_change(before, false);
+        self.record_change(before, EditKind::Other);
         EditOutcome::default()
     }
 }

@@ -12,22 +12,31 @@ pub(crate) mod gpu_events;
 pub(crate) mod layer_blur;
 mod layers;
 mod metallib;
+mod outlines;
 mod pass;
 use pass::{ActivePass, Backdrop};
 pub(crate) mod surface_alpha;
 pub(crate) mod translucency;
 mod upload;
+mod variant;
+#[cfg(target_os = "macos")]
+mod windfoil_metallib;
 pub use backdrop_blur::MAX_BACKDROP_BLURS;
 pub use first_use::precompiled_misses;
 pub use layers::LayerStats;
 
+/// Rounded rect in `fill` with a `params.x`-wide `border` ring drawn over it, as CSS paints a
+/// border over its background. `params.w` is the opacity the colours already carry (1 when not
+/// faded), so the ring hides the fill by `border.a / params.w`. Non-zero `uv` (with `uv.z >= 0`)
+/// gives per-side widths `[top, right, bottom, left]`; `params.x` is then the widest.
 pub const KIND_RECT: f32 = 0.0;
 pub const KIND_SHADOW: f32 = 1.0;
 pub const KIND_GLYPH: f32 = 2.0;
 /// Inset shadow inside a rounded rect: `params.x` spread, `params.z` sigma, `uv.xy` offset.
 pub const KIND_INSET: f32 = 3.0;
 /// Rounded rect with a vertical gradient: `fill` at the top, `uv` (premultiplied) at the bottom.
-/// With a border width in `params.x` it is a `KIND_RECT` whose ring runs from `border` to `uv`.
+/// With a border width in `params.x` it is a `KIND_RECT` whose ring runs from `border` to `uv`,
+/// over the fill, with the same `params.w`.
 pub const KIND_GRADIENT: f32 = 4.0;
 /// A stroke segment: `radii` = x0, y0, x1, y1; `params.x` half width, `params.z` 1 for round caps.
 pub const KIND_SEGMENT: f32 = 5.0;
@@ -114,6 +123,14 @@ impl Default for LayerSpec {
 /// rectangle, feathers and circular or continuous corners as the primitives around it. Prepend it
 /// to the shader source.
 pub const CLIP_WGSL: &str = include_str!("clip.wgsl");
+
+/// The uber shader's WGSL and the hash of its pipeline layout, as the precompiled DX12 bytecode
+/// records them; `examples/regen_dxbc.rs` regenerates that bytecode from them.
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub fn uber_shader_identity() -> (String, u64) {
+    (variant::windfoil_wgsl().unwrap_or_else(metallib::uber_wgsl), variant::windfoil_abi_hash())
+}
 
 /// Where a compositor is asked to draw an effect slot (`Renderer::draw_range_with`).
 pub struct EffectSite<'a> {
@@ -342,15 +359,19 @@ pub(crate) fn end_layer(instances: &mut Vec<Instance>, surfaces: &mut [crate::na
     let transfer_clip = scope.fade[3] == 0 && unmasked;
     // A lone effect slot keeps a faded scope: the compositor's paint can't take the opacity.
     let faded_effect = primitives == 1 && instances[start + 1].params[1] == KIND_EFFECT && scope.fill[3] != 1.0;
-    if !faded_effect && primitives + videos <= 1 && (primitives + videos == 0 || scope.border[1] == 0.0) && scope.params[0] == 0.0 && scope.params[2] == 0.0 && scope.params[3] == 0.0
+    // A layer's `radii` hold its hole (`El::cutout_circle`), which only its composite can cut.
+    if !faded_effect && primitives + videos <= 1 && (primitives + videos == 0 || (scope.border[1] == 0.0 && scope.radii == [0.0; 4])) && scope.params[0] == 0.0 && scope.params[2] == 0.0 && scope.params[3] == 0.0
         && (transfer_clip || (scope.clip == NO_CLIP && scope.fade == [0; 4])) {
         let opacity = scope.fill[3];
         if primitives == 1 {
             let i = &mut instances[start + 1];
             if transfer_clip { i.clip = scope.clip; i.fade = scope.fade; }
             i.fill = i.fill.map(|v| v * opacity);
-            i.border = i.border.map(|v| v * opacity);
+            // A glyph's `border` holds no colour (an outline glyph's names its record).
+            if i.params[1] != KIND_GLYPH { i.border = i.border.map(|v| v * opacity); }
             if i.params[1] == KIND_GRADIENT { i.uv = i.uv.map(|v| v * opacity); }
+            // A box's `params.w` is the opacity its colours carry (shader.wgsl `border_over`).
+            if i.params[1] == KIND_RECT || i.params[1] == KIND_GRADIENT { i.params[3] *= opacity; }
         }
         if videos == 1 {
             if transfer_clip { surfaces[surface_start].clip = scope.clip; surfaces[surface_start].fade = scope.fade; }
@@ -694,6 +715,10 @@ pub struct Renderer {
     bind_layout: wgpu::BindGroupLayout,
     globals: wgpu::Buffer,
     atlas: wgpu::Texture,
+    /// Which uber shader draws (`variant::Uber`), with the outline store's texture under Windfoil.
+    uber: variant::Uber,
+    /// The 1×1 image the base bind group holds until the first image page.
+    stand_in: wgpu::Texture,
     /// Secondary glyph atlas pages (`1..`).
     atlas_pages: Vec<(wgpu::Texture, wgpu::BindGroup)>,
     /// Stable image pages; the initial bind group uses a 1×1 stand-in.
@@ -725,7 +750,7 @@ impl Renderer {
     }
 
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Renderer {
-        Self::create(device, format, None)
+        Self::create(device, format, None, cfg!(target_os = "macos"))
     }
 
     pub fn set_srgb_blend(&mut self, enabled: bool) {
@@ -738,10 +763,17 @@ impl Renderer {
     /// Opt-in retained geometry. IDs map instances to shared translation/opacity nodes.
     /// Upload geometry once with `prepare`, then use `present_at` without rebuilding instances.
     pub fn with_springs(device: &wgpu::Device, format: wgpu::TextureFormat, nodes: &[crate::gpu::springs::Node], ids: &[u32]) -> Renderer {
-        Self::create(device, format, Some((nodes, ids)))
+        Self::create(device, format, Some((nodes, ids)), true)
     }
 
-    fn create(device: &wgpu::Device, format: wgpu::TextureFormat, properties: Option<(&[crate::gpu::springs::Node], &[u32])>) -> Renderer {
+    /// A renderer that starts with the Classic uber shader, as on macOS, and builds Windfoil when
+    /// text first draws from outlines (render/variant.rs); for checking that path elsewhere.
+    #[doc(hidden)]
+    pub fn new_classic(device: &wgpu::Device, format: wgpu::TextureFormat) -> Renderer {
+        Self::create(device, format, None, true)
+    }
+
+    fn create(device: &wgpu::Device, format: wgpu::TextureFormat, properties: Option<(&[crate::gpu::springs::Node], &[u32])>, classic: bool) -> Renderer {
         let spring_shader = if properties.is_some() {
             let source = format!("{CLIP_WGSL}\n{}\n{}", include_str!("shader.wgsl"), crate::gpu::springs::SHADER);
             Some(device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -751,10 +783,6 @@ impl Renderer {
         } else {
             None
         };
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &metallib::uber_bind_entries(),
-        });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: u64::from(device.limits().min_uniform_buffer_offset_alignment).max(32) + 16,
@@ -763,18 +791,35 @@ impl Renderer {
         });
         let atlas = Self::texture(device, "glyph atlas", wgpu::TextureFormat::R8Unorm, ATLAS_SIZE, ATLAS_SIZE);
         let stand_in = Self::image_texture(device, 1, 1);
-        let bind_group = Self::bind_group(device, &bgl, &globals, &atlas, &stand_in, None);
         let spring_layout = properties.map(|_| crate::gpu::springs::Bindings::layout(device));
-        let layouts = [Some(&bgl), spring_layout.as_ref()];
-        let layout = device.create_pipeline_layout(&metallib::uber_pipeline_layout(
-            &layouts, properties.is_some(),
-        ));
         let vertex_entry = if properties.is_some() { "vs_springs" } else { "vs" };
-        let make_pipeline = |shader: &dxbc::Shaders| Self::pipeline(device, &layout, shader, format, vertex_entry, Blend::SourceOver);
-        let (shader, pipeline) = match spring_shader {
-            Some(shader) => { let shader = dxbc::Shaders::one(shader); let pipeline = make_pipeline(&shader); (shader, pipeline) }
-            None => metallib::uber_shader_and_pipeline(device, make_pipeline),
+        // The shader machine starts Classic; everywhere but macOS (whose default text keeps the
+        // Classic shader it always drew) and GPU springs, it asks for Windfoil at once.
+        let (uber, windfoil) = if classic {
+            (variant::Uber::Classic, None)
+        } else {
+            Self::start_windfoil(device, format, vertex_entry)
         };
+        let (bgl, layout, shader, pipeline) = match windfoil {
+            Some(built) => (built.bind_layout, built.layout, built.shader, built.pipeline),
+            None => {
+                let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: None,
+                    entries: &metallib::uber_bind_entries(),
+                });
+                let layouts = [Some(&bgl), spring_layout.as_ref()];
+                let layout = device.create_pipeline_layout(&metallib::uber_pipeline_layout(
+                    &layouts, properties.is_some(),
+                ));
+                let make_pipeline = |shader: &dxbc::Shaders| Self::pipeline(device, &layout, shader, format, vertex_entry, Blend::SourceOver);
+                let (shader, pipeline) = match spring_shader {
+                    Some(shader) => { let shader = dxbc::Shaders::one(shader); let pipeline = make_pipeline(&shader); (shader, pipeline) }
+                    None => metallib::uber_shader_and_pipeline(device, make_pipeline),
+                };
+                (bgl, layout, shader, pipeline)
+            }
+        };
+        let bind_group = Self::bind_group(device, &bgl, &globals, uber.outlines(), &atlas, &stand_in, None);
         let capacity = 256;
         let instances = Self::instance_buffer(device, capacity);
         let spring_instances = properties.map_or(0, |(_, ids)| ids.len());
@@ -791,6 +836,8 @@ impl Renderer {
             bind_layout: bgl,
             globals,
             atlas,
+            uber,
+            stand_in,
             atlas_pages: Vec::new(),
             images: Vec::new(),
             image_batches: Vec::new(),
@@ -866,26 +913,29 @@ impl Renderer {
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         globals: &wgpu::Buffer,
+        outlines: Option<&wgpu::Texture>,
         atlas: &wgpu::Texture,
         images: &wgpu::Texture,
         target: Option<&wgpu::Buffer>,
     ) -> wgpu::BindGroup {
         let atlas_view = atlas.create_view(&Default::default());
         let image_view = images.create_view(&Default::default());
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&atlas_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&image_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: target.unwrap_or(globals),
-                    offset: if target.is_some() { 0 } else { u64::from(device.limits().min_uniform_buffer_offset_alignment).max(32) },
-                    size: std::num::NonZeroU64::new(16),
-                }) },
-            ],
-        })
+        let outline_view = outlines.map(|t| t.create_view(&Default::default()));
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&atlas_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&image_view) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: target.unwrap_or(globals),
+                offset: if target.is_some() { 0 } else { u64::from(device.limits().min_uniform_buffer_offset_alignment).max(32) },
+                size: std::num::NonZeroU64::new(16),
+            }) },
+        ];
+        // The Windfoil shader's outline store (render/variant.rs); Classic has no binding 4.
+        if let Some(view) = &outline_view {
+            entries.push(wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(view) });
+        }
+        device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout, entries: &entries })
     }
 
     /// Builds the pipeline for another target format (e.g. an `Rgba16Float` layer), once.

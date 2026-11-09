@@ -71,7 +71,7 @@ pub(crate) fn headless_configured<S: 'static>(mut app: crate::app::App<S>, args:
     crate::tooling::interaction::gate::headless();
     let mut comp = app.compositor.take();
     let (srgb_blend, font_smoothing) = (app.srgb_blend, app.font_smoothing);
-    let (on_focus, on_ime) = (app.on_focus, app.on_ime);
+    let (on_focus, on_ime, on_mods) = (app.on_focus, app.on_ime, app.on_mods);
     let on_reopen = app.on_reopen;
     let mut reports = crate::frame::encoded::FrameReports::<S>::new(app.on_frame_encoded.take(), Some("main"));
     let source = read_script(&args);
@@ -108,6 +108,7 @@ pub(crate) fn headless_configured<S: 'static>(mut app: crate::app::App<S>, args:
     crate::playground::attach(&mut rt, playground, &spec, args.playground.clone(), args.variant.clone(), false);
     let chrome = rt.headless_chrome(chrome, titlebar, app_options.borderless);
     rt.on_focus = on_focus;
+    rt.on_mods = on_mods;
     rt.app_ime.hook = on_ime;
     rt.transparent = transparent;
     rt.fit_height = fit_height;
@@ -233,6 +234,10 @@ pub(crate) fn headless_configured<S: 'static>(mut app: crate::app::App<S>, args:
             (procwatch::alloc::thread_allocations(), rt.stats.commits, crate::frame::profile::cpu_ms())
         };
         let real_t = k as f64 * dt;
+        if args.realtime {
+            let ahead = real_t - wall.elapsed().as_secs_f64();
+            if ahead > 0.0 { std::thread::sleep(std::time::Duration::from_secs_f64(ahead)); }
+        }
         let frame_start = Instant::now();
         #[cfg(feature = "frame-profile")]
         let events0 = next_ev;
@@ -247,6 +252,11 @@ pub(crate) fn headless_configured<S: 'static>(mut app: crate::app::App<S>, args:
                 Pos::Rel(dx, dy) => (last_down.0 + dx, last_down.1 + dy),
             };
             match &e.kind {
+                Kind::Mark(name) if args.realtime => {
+                    use std::io::Write as _;
+                    println!("rune-mark {name} {}", e.t);
+                    let _ = std::io::stdout().flush();
+                }
                 Kind::Mark(_) => {}
                 Kind::Focus(focused) => rt.window_focus(*focused),
                 // The one window always shows here.

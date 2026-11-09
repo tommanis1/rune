@@ -55,7 +55,8 @@ Rune's core crate: views, layout, animation, rendering, text and the native shel
   - The animation clock has a time scale, which the Settings speed slider drives.
 - **Renderer** (`render.rs`, `shader.wgsl`): one instanced uber-quad pipeline and one draw call per
   frame.
-  - Kinds: rounded rects (per-corner radius, border), analytic Gaussian shadows (outer and inset),
+  - Kinds: rounded rects (per-corner radius, a border drawn over the fill as CSS draws one, per-side
+    widths), analytic Gaussian shadows (outer and inset),
     vertical and angled linear gradients, circular and elliptical radial gradients (`KIND_RADIAL`),
     dashed border rings (`KIND_DASHED`), RGBA images, and glyphs from the atlas.
   - **Gradients** (`.gradient(top, bottom)`, `.radial_gradient(center, radius, stops)`,
@@ -115,6 +116,15 @@ Rune's core crate: views, layout, animation, rendering, text and the native shel
     place from Parley's bytes), pens sit on Skia's quarter pixels, and Skia's gamma tables
     (sRGB, contrast 1, eight luminance buckets) weigh each mask by its ink
     (`text/windows/`). Off Windows it draws as `Off`.
+  - `Windfoil`: Rune's own text, the same on every OS. Text at rest draws as `On`; text whose
+    scale moves (a zoom, a presence scale, a text flight) draws straight from its outlines on the
+    GPU, at its resting pen and size magnified, so it stays sharp and lands on the mask it rests
+    as (`text/outline/`, `outline.wgsl`). Coverage is Windfoil's closed-form box filter over
+    xy-monotone quadratics (DesLauriers 2026), with CoreText's dilation and y autohint applied
+    per pixel. A text's raster path is a state machine (`text/outline/path.rs`: still, moving,
+    landing). It needs the renderer's Windfoil shader (`render/variant.rs`): renderers start
+    with it everywhere but macOS, where the Classic shader keeps drawing until text asks for
+    outlines; where it can't be built, text draws as `On`.
   `On` and `Off` work on every OS, since they are arithmetic on outlines. Blending is separate
   (`srgb_blend`).
   `cargo run -p rune --example coretext_compare [-- --smoothing on|off]` measures
@@ -642,9 +652,18 @@ app.run();
 
   Launch Services learns the scheme when the bundle is opened or registered (`lsregister -f
   MyApp.app`); then `open 'myapp://x'` launches or reaches the app. A bare `cargo run` binary has
-  no bundle and gets no links. iOS isn't wired yet (winit owns the scene delegate), and Windows
-  and Linux pass a link to a new process as a launch argument, so the hook never runs there;
-  read it from the arguments, with your own single-instance forwarding if you need one.
+  no bundle and gets no links. iOS isn't wired yet (winit owns the scene delegate), and Linux
+  passes a link to a new process as a launch argument, so the hook never runs there.
+- Links and relaunches on Windows: Windows starts a new process for each launch, passing a link
+  as an argument. The hook receives the links among the first process's arguments
+  (`scheme://…`) like the launching link on macOS. Call `rune::single_instance("com.example.myapp")`
+  first thing in `main` to keep one process: a later launch hands its arguments to the running
+  process over a per-user named pipe and lets it take the foreground, and `single_instance`
+  returns false so `main` returns without opening a window. Its links reach the hook; a launch
+  without links reopens the app (`App::on_reopen`, then the default, which also brings the front
+  window forward, restored). Register the scheme for the user, usually at install:
+  `HKEY_CURRENT_USER\Software\Classes\myapp` with an empty `URL Protocol` value and
+  `shell\open\command` set to `"C:\path\to\myapp.exe" "%1"`.
   `scripts/mac-app --scheme myapp` writes that entry and registers the bundle for you (see
   "Relaunching a Mac app" below).
 - Edge overlays (HUDs): see `App::overlay` below.
@@ -806,6 +825,49 @@ true
   closed window, so call `cancel` from `App::on_close` to stop requests on close.
 
 Only the closure runs on the worker; the answer reaches state in `poll`, on the UI thread.
+
+### State machines (`rune::machine`)
+
+Anything with modes (a hover delay, a drag, a request and its retries, a dialog flow) is one
+`enum State` whose variants carry only what is valid in them, and one transition that returns
+what should happen instead of doing it:
+
+```rust
+use rune::machine::{Attempt, Effects, Seq};
+
+enum Tip { Idle, Waiting { attempt: Attempt, due: f64 }, Open }
+enum Event { Enter { now: f64 }, Leave, Due { attempt: Attempt, now: f64 } }
+enum Effect { WakeAt(f64) }
+
+fn step(seq: &mut Seq, tip: &mut Tip, event: Event) -> Effects<Effect> {
+    match (&*tip, event) {
+        (Tip::Idle, Event::Enter { now }) => {
+            let (attempt, due) = (seq.next(), now + 0.4);
+            *tip = Tip::Waiting { attempt, due };
+            Effects::one(Effect::WakeAt(due))
+        }
+        (Tip::Waiting { attempt, due }, Event::Due { attempt: a, now }) if *attempt == a && now >= *due => {
+            *tip = Tip::Open;
+            Effects::none()
+        }
+        (_, Event::Leave) => { *tip = Tip::Idle; Effects::none() }
+        _ => Effects::none(),
+    }
+}
+// A handler steps with `tx.clock()` and carries the effects out:
+for e in step(&mut s.seq, &mut s.tip, Event::Enter { now: tx.clock() }) {
+    match e { Effect::WakeAt(due) => tx.wake_at(due) }
+}
+```
+
+- **Illegal states don't exist.** `Waiting` without a deadline, or `Open` with one, can't be
+  built, so no code has to clear a flag another forgot.
+- **Timers are events.** Deadlines are on `Tx::clock` (the clock `poll` gets, virtual in headless
+  runs); `Tx::wake_at(due)` wakes `poll`, which feeds `Due` back into `step`.
+- **Attempts fence answers.** `Seq::next` issues an `Attempt` per request, timer or dialog; an
+  answer carrying an attempt the state no longer holds falls through to `_` and changes nothing.
+- **Effects stay inline.** `Effects<E>` holds up to two effects without allocating; `push` and
+  `extend` add more, and it iterates in order.
 
 ### Relaunching a Mac app (`scripts/mac-app`, `rune-mac`)
 
@@ -1163,7 +1225,9 @@ with `Runtime::window_focus(bool)`.
 `[f32; 4]`, `Color`). Call `set(value)` from a producer thread; Rune coalesces a
 wake for each visible subscribed window. Equal values and hidden windows do not
 wake. Bind with `.live_opacity(&level)`, `.live_offset(&cursor)`,
-`.live_scale(&scale)`, `.live_fill(&color)` or `.live_rect(&rect)`.
+`.live_scale(&scale)`, `.live_fill(&color)` or `.live_rect(&rect)`, and colours with
+`.live_text_color`, `.live_border`, `.live_shadow` (the first shadow's colour) and
+`.live_gradient(&top, &bottom)`. A rebuild keeps what a colour binding last set.
 `cursor.smooth(Spring::new(0.16, 0.0))` opts a binding into rune-motion smoothing.
 Views and layout do not rerun. Rects are presentation `[x,y,w,h]` in parent points,
 so text does not rewrap and siblings do not reflow. See
@@ -1565,7 +1629,9 @@ Once the system drag starts, Rune drops the pointer capture and hover, so nothin
 Files are offered as copies (`DragItem::allow_move` also offers a move), an app bundle can be
 dropped into System Settings' privacy lists, and the picture under the pointer is a snapshot of
 the element unless `DragItem::image` sets one. `on_drag_end` receives `DragOutcome::Copied`,
-`Moved`, `Linked` or `Cancelled`.
+`Moved`, `Linked` or `Cancelled`. The app's own windows take no drop from its drags unless
+`DragItem::within_app` offers it to them: their `on_drop_files` targets then receive the files
+as they would from Finder (an image dragged from a list into a composer).
 
 macOS only for now. Elsewhere `drag_out` is ignored and the element keeps its press and
 `on_drag` behaviour. Headless runs record `drag-out <path>` in `--trace` and mark the node

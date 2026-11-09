@@ -31,6 +31,8 @@ pub(super) struct Renderer {
     pub(super) diagram_frame: Option<FrameWire>,
     /// `Markdown::code_frame`.
     pub(super) code_frame: Option<CodeWire>,
+    /// `Markdown::quote_frame`.
+    pub(super) quote_frame: Option<QuoteWire>,
     /// `Markdown::link_favicon`.
     pub(super) link_favicon: Option<link_icon::FaviconWire>,
     /// `Markdown::images` and `Markdown::on_image`.
@@ -49,10 +51,43 @@ pub(super) struct Flow {
     pub(super) ink: Option<Color>,
     /// How much narrower than the text column they are: list indents and quote rules.
     pub(super) inset: f32,
+    /// The columns a nested list's copied markers are indented by (`"  - "` under `"- "`).
+    pub(super) cols: u8,
+    /// The marker a copy puts before the paragraph that opens a list item, its indent, and the
+    /// newlines before it: two to set a top-level list apart from the block before it.
+    pub(super) lead: Option<(u8, Lead, u8)>,
+}
+
+/// A list item's marker as copying writes it.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Lead {
+    Bullet,
+    Number(u64),
+    Task(bool),
+}
+
+impl Lead {
+    pub(super) fn marker(self) -> String {
+        match self {
+            Lead::Bullet => "- ".into(),
+            Lead::Number(n) => format!("{n}. "),
+            Lead::Task(done) => if done { "- [x] ".into() } else { "- [ ] ".into() },
+        }
+    }
+
+    /// The columns a list nested in the item is indented by, past the item's own.
+    pub(super) fn width(self) -> u8 {
+        match self {
+            Lead::Number(n) => n.to_string().len() as u8 + 2,
+            _ => 2,
+        }
+    }
 }
 
 /// Shell languages, which [`MarkdownStyle::shell_code`] styles apart (`markdown.tsx`'s list).
 const SHELLS: [&str; 7] = ["bash", "sh", "shell", "zsh", "fish", "console", "terminal"];
+/// Plain-text fence names, which [`MarkdownStyle::plain_code_text`] colours as a fence with none.
+const PLAIN_TEXT: [&str; 4] = ["text", "txt", "plain", "plaintext"];
 
 /// The keys [`Renderer::blocks`] gives `n` blocks.
 pub(super) fn rendered_keys(n: usize, keys: &[String]) -> Vec<String> {
@@ -118,6 +153,26 @@ pub(super) fn margins(b: &Block, s: &MarkdownStyle) -> (f32, f32) {
     }
 }
 
+thread_local! {
+    static PAD_SIZES: RefCell<std::collections::HashMap<u64, f32>> = RefCell::new(std::collections::HashMap::new());
+}
+
+/// The size that sets inline code's padding spaces (`PAD`, in the text's own `font`) to `pad`
+/// points a side, so the text beside the chip sits where a page's `padding: 0 4px` puts it.
+/// Solved twice: a variable font's optical size moves its spaces' widths with the size.
+fn pad_size(font: TextStyle, pad: f32) -> f32 {
+    let key = hash_of((font, pad.to_bits(), rune::text::font_epoch()));
+    if let Some(size) = PAD_SIZES.with_borrow(|m| m.get(&key).copied()) {
+        return size;
+    }
+    let probe = PAD.repeat(64);
+    let wide = |size: f32| (rune::text::measure(&probe, &[], TextStyle { size, ..font }, None).0 / 64.0).max(0.1);
+    let first = font.size * pad / wide(font.size);
+    let size = first * pad / wide(first);
+    PAD_SIZES.with_borrow_mut(|m| m.insert(key, size));
+    size
+}
+
 /// Code as rich text with `spans` and `highlights` (byte ranges of `code`). Text layout widens
 /// tabs in a monospace `style` to four-column stops itself; in any other family it draws a tab
 /// as one space, so each tab is padded with uncopied spaces to the next stop: lines line up and a
@@ -168,8 +223,9 @@ fn tabbed(code: &str, mut spans: Vec<Span>, mut highlights: Vec<TextHighlight>, 
 }
 
 impl Renderer {
-    pub(super) fn spans(&self, inl: &Inline, base: f32) -> Vec<Span> {
+    pub(super) fn spans(&self, inl: &Inline, font: TextStyle) -> Vec<Span> {
         let s = &self.s;
+        let base = font.size;
         let links: Vec<Span> = if inl.links.is_empty() {
             Vec::new()
         } else {
@@ -203,8 +259,10 @@ impl Renderer {
                         sp = sp.bg(s.code_bg, s.inline_code_pad);
                     }
                 }
-                Style::CodePad if no_line.is_none() => continue,
-                Style::CodePad => sp.underline = no_line,
+                Style::CodePad => {
+                    sp.size = Some(pad_size(font, s.inline_code_pad));
+                    sp.underline = no_line;
+                }
                 Style::Strong => sp.weight = Some(s.strong_weight),
                 Style::Em => sp.italic = true,
                 Style::Strike | Style::Link => unreachable!(),
@@ -280,7 +338,13 @@ impl Renderer {
     pub(super) fn para(&self, inl: &Inline, map: Option<&SpanMap>, style: TextStyle, color: Color) -> El {
         // Lines keep their own 22.4 points, as a page's do, so a long list doesn't drift a
         // point per item.
-        let e = self.with_reveal(rich(inl.text.clone(), self.spans(inl, style.size)).font(style).color(color).exact_lines()).w_full();
+        let e = self.with_reveal(rich(inl.text.clone(), self.spans(inl, style)).font(style).color(color).exact_lines()).w_full();
+        // A copy puts a blank line around a paragraph, one newline around a list item's first
+        // with its marker before it.
+        let e = match self.flow.get().lead {
+            Some((cols, lead, before)) => e.copy_prefix(format!("{}{}", " ".repeat(cols.into()), lead.marker())).copy_breaks(before, 1),
+            None => e.copy_breaks(2, 2),
+        };
         self.select_inline(e, inl, map)
     }
 
@@ -315,12 +379,18 @@ impl Renderer {
             };
             let top = match b {
                 _ if i == 0 => 0.0,
-                Block::Heading(..) | Block::Rule => mt.max(prev_mb),
+                // An image keeps its own 24 under a heading: the page zeroes the top margin of
+                // the paragraph holding it, not the image's, which collapses through.
+                Block::Heading(..) | Block::Rule | Block::Image { .. } => mt.max(prev_mb),
                 _ if after_heading => prev_mb,
                 _ => mt.max(prev_mb),
             };
             if top_level {
                 self.current_block_key.replace(key.clone().into());
+            }
+            // Only an item's first block copies after its marker.
+            if i > 0 {
+                self.flow.set(Flow { lead: None, ..self.flow.get() });
             }
             c = c.child(self.block(b, maps.get(i).unwrap_or(&empty)).key(key).mt(top));
             prev_mb = mb;
@@ -333,12 +403,14 @@ impl Renderer {
         let s = &self.s;
         let highlights = self.text_highlights_for(code, map);
         let shell = s.shell.filter(|_| source.and_then(|src| src.lang.as_deref()).is_some_and(|l| SHELLS.iter().any(|sh| l.eq_ignore_ascii_case(sh))));
+        let plain = source.and_then(|src| src.lang.as_deref()).is_none_or(|l| PLAIN_TEXT.iter().any(|p| l.eq_ignore_ascii_case(p)));
         let (fill, border, ink) = match shell {
             Some(sh) => (sh.fill, sh.border, sh.text),
+            None if plain => (s.code_block_fill, s.code_block_border, s.plain_code_text.or(s.code_text).unwrap_or(s.text)),
             None => (s.code_block_fill, s.code_block_border, s.code_text.unwrap_or(s.text)),
         };
         let spans = if shell.is_some() { Vec::new() } else { self.syntax_spans(code, source) };
-        let body = self.with_reveal(tabbed(code, spans, highlights, s.code_block, self.source_pairs(map)).font(s.code_block).color(ink));
+        let body = self.with_reveal(tabbed(code, spans, highlights, s.code_block, self.source_pairs(map)).font(s.code_block).color(ink)).copy_breaks(2, 2);
         let frame = col().role("code").w_full().radius(6.0).fill(fill).border(0.5, border);
         if self.scroll_wide {
             // The text sizes to its longest line inside the viewport, which scrolls under the
@@ -355,7 +427,7 @@ impl Renderer {
     pub(super) fn syntax_spans(&self, code: &str, source: Option<&Source>) -> Vec<Span> {
         let Some(src) = source.filter(|_| self.s.highlight) else { return Vec::new() };
         let lang = src.lang.as_deref();
-        // The built-in scanners leave other languages plain; skip the cache for those.
+        // The built-in highlighter leaves other languages plain; skip the cache for those.
         if self.highlighter.is_builtin() && !lang.is_some_and(crate::syntax::known) {
             return Vec::new();
         }
@@ -369,6 +441,7 @@ impl Renderer {
         let all_hl = self.text_highlights_for(src, map);
         let mut c = col().role("code").w_full().py(s.code_block_pad[1]).radius(6.0).fill(s.code_block_fill).border(0.5, s.code_block_border);
         let mut line_start = 0usize;
+        let last = src.split('\n').count() - 1;
         for (n, line) in src.split('\n').enumerate() {
             let line_end = line_start + line.len();
             let line_hl: Vec<TextHighlight> = all_hl
@@ -402,7 +475,8 @@ impl Renderer {
                 .key(format!("l{n}"))
                 .w_full()
                 .px(s.code_block_pad[0])
-                .child(self.select(self.with_reveal(tabbed(shown, Vec::new(), line_hl, s.code_block, line_map).font(s.code_block).color(color).wrap()).w_full()));
+                .child(self.select(self.with_reveal(tabbed(shown, Vec::new(), line_hl, s.code_block, line_map).font(s.code_block).color(color).wrap()).w_full()
+                    .copy_breaks(if n == 0 { 2 } else { 1 }, if n == last { 2 } else { 1 })));
             if let Some(t) = tint {
                 r = r.fill(t);
             }
@@ -535,14 +609,20 @@ impl Renderer {
                 };
                 // Outside markers end a space's width before the text, as a browser sets "1. ".
                 let space = if s.list_outside { rune::text::measure("x x", &[], s.body, None).0 - rune::text::measure("xx", &[], s.body, None).0 } else { 0.0 };
-                self.flow.set(Flow { lists: flow.lists + 1, inset: flow.inset + indent, ..flow });
                 let mut c = col().role("list").w_full().gap(s.list_gap);
                 let n = items.len();
                 for (k, item) in items.iter().enumerate() {
                     let imap = item_maps.get(k).map_or(&[][..], Vec::as_slice);
                     let task_idx = self.next_task.get();
                     self.next_task.set(task_idx + 1);
-                    if let Some((checked, marker_offset)) = self.tasks.get(task_idx).copied().flatten() {
+                    let task = self.tasks.get(task_idx).copied().flatten();
+                    let lead = match (task, start) {
+                        (Some((checked, _)), _) => Lead::Task(checked),
+                        (None, Some(n)) => Lead::Number(n + k as u64),
+                        (None, None) => Lead::Bullet,
+                    };
+                    self.flow.set(Flow { lists: flow.lists + 1, inset: flow.inset + indent, cols: flow.cols + lead.width(), lead: Some((flow.cols, lead, if k == 0 && flow.lists == 0 { 2 } else { 1 })), ..flow });
+                    if let Some((checked, marker_offset)) = task {
                         c = c.child(self.task_item((k, n), indent, item, imap, marker_offset, checked));
                         continue;
                     }
@@ -573,14 +653,19 @@ impl Renderer {
                 };
                 let q = s.quote;
                 let flow = self.flow.get();
+                let first_task = self.next_task.get();
                 self.flow.set(Flow { ink: q.text.or(flow.ink), inset: flow.inset + q.width + q.pad, ..flow });
-                let inner = self.blocks(inner, inner_maps, &[], false);
+                let drawn = self.blocks(inner, inner_maps, &[], false);
                 self.flow.set(flow);
-                row()
+                let quote = row()
                     .role("blockquote")
                     .w_full()
                     .child(el().w(q.width).h_full().radius((q.width / 2.0).min(1.0)).fill(s.quote_rule))
-                    .child(inner.grow(1.0).shrink().pl(q.pad))
+                    .child(drawn.grow(1.0).shrink().pl(q.pad));
+                match &self.quote_frame {
+                    Some(f) => f(quote, &QuoteFrame { text: &self.plain_text(inner, first_task, Flow { lead: None, ..flow }) }),
+                    None => quote,
+                }
             }
             // A clear rule is spacing only (`hr { border: none; height: 0 }`).
             Block::Image { src, alt, title } => self.image(src, alt, title),

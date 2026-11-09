@@ -50,8 +50,14 @@ pub struct TextSpec {
     pub(crate) uncopied: Vec<(u32, u32)>,
     /// See [`El::source_map`](crate::El::source_map): `(source range, content range)` pairs.
     pub(crate) source_map: Option<std::rc::Rc<[(std::ops::Range<usize>, std::ops::Range<usize>)]>>,
+    /// See [`El::copy_breaks`](crate::El::copy_breaks): newlines before and after it.
+    pub(crate) copy_breaks: [u8; 2],
+    /// See [`El::copy_prefix`](crate::El::copy_prefix).
+    pub(crate) copy_prefix: Option<std::rc::Rc<str>>,
     /// Inset border rings `(start, end, color, width)` on rounded span backgrounds.
     pub(crate) rings: Vec<(u32, u32, Color, f32)>,
+    /// See [`El::span_radius`](crate::El::span_radius), in points.
+    pub(crate) span_radius: f32,
     /// Strikethrough byte ranges `(start, end, color)` of `content`.
     pub(crate) strikes: Vec<(u32, u32, Option<Color>)>,
     /// Paint-only highlight byte ranges of `content`.
@@ -69,8 +75,12 @@ pub struct TextSpec {
     pub(crate) redacted: bool,
     pub(crate) secure_revealed: bool,
     pub(crate) wrap_anywhere: bool,
-    /// See [`El::exact_lines`](crate::El::exact_lines): the height is its lines' own, unrounded.
+    /// See [`El::exact_lines`](crate::El::exact_lines): the height is its lines' own, unrounded,
+    /// unless [`El::rounded_lines`](crate::El::rounded_lines) rounds it to device pixels.
     pub(crate) exact_lines: bool,
+    /// Lays out with a right-to-left paragraph direction: the element's resolved `El::dir`,
+    /// set when it's flattened.
+    pub(crate) flow: crate::el::Flow,
     /// The scale's bits and [`crate::text::shape_key`] at it, once the content is final (see
     /// [`TextSpec::key_shape`]).
     pub(crate) shape: Option<(u32, u64)>,
@@ -111,16 +121,25 @@ impl TextSpec {
     /// Hashes what shaping depends on once, so measuring and laying the text out at each width
     /// this commit reuses it. Secure text keeps no content-derived key.
     pub(crate) fn key_shape(&mut self, scale: f32) {
-        self.shape = (!self.redacted)
-            .then(|| (scale.to_bits(), crate::text::shape_key(&self.content, &self.spans, self.style, scale, self.wrap_anywhere, &self.pills)));
+        self.shape = (!self.redacted).then(|| (scale.to_bits(), self.fresh_shape_key(scale)));
     }
 
     /// The key [`Self::key_shape`] kept at `scale`.
     pub(crate) fn shape_key(&self, scale: f32) -> Option<u64> {
         let (_, key) = self.shape.filter(|s| s.0 == scale.to_bits())?;
-        debug_assert_eq!(key, crate::text::shape_key(&self.content, &self.spans, self.style, scale, self.wrap_anywhere, &self.pills),
-            "a text changed after its shape key was taken");
+        debug_assert_eq!(key, self.fresh_shape_key(scale), "a text changed after its shape key was taken");
         Some(key)
+    }
+
+    /// [`crate::text::shape_key`] of this text in its direction.
+    pub(crate) fn fresh_shape_key(&self, scale: f32) -> u64 {
+        let key = crate::text::shape_key(&self.content, &self.spans, self.style, scale, self.wrap_anywhere, &self.pills);
+        crate::text::directed(key, self.base())
+    }
+
+    /// The paragraph direction it lays out in.
+    pub(crate) fn base(&self) -> parley::BaseDirection {
+        self.flow.base()
     }
 
     /// Zeroizes the shown string and shows `content` instead.

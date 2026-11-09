@@ -17,17 +17,25 @@ use super::ApplePipeline;
 pub enum FontSmoothing {
     /// Text that matches CoreText's with font smoothing on (macOS's default): the pipeline plus
     /// font smoothing's outline dilation, which grows outlines by a radius set by the text
-    /// colour's luminance and the device ppem ([`ApplePipeline::SMOOTHED`]).
+    /// colour's luminance and the device ppem ([`ApplePipeline::SMOOTHED`]). The default on
+    /// macOS, and on the web in a Mac's browser, which draws the page's own text this way.
     On,
     /// Text that matches CoreText with font smoothing off, which is what macOS browsers draw
     /// for `-webkit-font-smoothing: antialiased`: the pipeline without the dilation
-    /// ([`ApplePipeline::UNSMOOTHED`]). Lighter than `On`. The default on Linux and the web.
+    /// ([`ApplePipeline::UNSMOOTHED`]). Lighter than `On`. The default on Linux, and on the web
+    /// other than in a Mac's browser.
     Off,
     /// Text that matches Chromium's on Windows: DirectWrite rasterises each glyph as Skia asks it
     /// to (the rendering mode the font's `gasp` table picks, its hints, grayscale antialiasing),
     /// pens sit on quarter pixels, and Skia's text gamma and contrast weigh the coverage by the
     /// text's luminance. The default on Windows; elsewhere, without DirectWrite, it draws as `Off`.
     DirectWrite,
+    /// Rune's own text, the same on every platform: each glyph's exact pixel coverage from its
+    /// outline (Windfoil's box filter), grown by CoreText's font smoothing dilation, so it has the
+    /// macOS weight, with coverage drawn as is. Text whose scale moves (zooms, presence scales,
+    /// text flights) draws straight from its outlines on the GPU, so it stays sharp and doesn't
+    /// change when it lands. Where the renderer can't draw outlines it draws as `On`.
+    Windfoil,
 }
 
 impl Default for FontSmoothing {
@@ -37,9 +45,22 @@ impl Default for FontSmoothing {
         } else if cfg!(target_os = "windows") {
             FontSmoothing::DirectWrite
         } else {
+            #[cfg(target_arch = "wasm32")]
+            if let Some(platform) = crate::platform::web::platform::browser_platform() {
+                return browser_default(&platform.0, platform.1);
+            }
             FontSmoothing::Off
         }
     }
+}
+
+/// What a browser's page text draws like, from its `navigator` platform and touch points:
+/// Safari, Chrome and Firefox on a Mac draw with font smoothing unless a page turns it off.
+/// iPhones and iPads never smooth, and an iPad reports itself as a Mac with a touch screen.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn browser_default(platform: &str, touch_points: u32) -> FontSmoothing {
+    let mac = platform.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("mac"));
+    if mac && touch_points <= 1 { FontSmoothing::On } else { FontSmoothing::Off }
 }
 
 impl FontSmoothing {
@@ -47,7 +68,7 @@ impl FontSmoothing {
     /// dilation for `Off` (and for `DirectWrite` where DirectWrite can't draw a glyph).
     pub fn pipeline(self) -> ApplePipeline {
         match self {
-            FontSmoothing::On => ApplePipeline::SMOOTHED,
+            FontSmoothing::On | FontSmoothing::Windfoil => ApplePipeline::SMOOTHED,
             FontSmoothing::Off | FontSmoothing::DirectWrite => ApplePipeline::UNSMOOTHED,
         }
     }
@@ -78,6 +99,30 @@ pub(crate) fn glyph_x(x: f32, ppem: f32) -> (f32, u8) {
     let fx = x.floor();
     let phase = ((x - fx) * steps).round();
     if phase >= steps { (fx + 1.0, 0) } else { (fx, (phase * (PHASES / steps)) as u8) }
+}
+
+/// Coverage exponents for black and for white text with font smoothing off: the curve Skia's
+/// text gamma (sRGB, contrast 1) draws grayscale text with, for outlines rasterised elsewhere.
+const TEXT_GAMMA: [f32; 2] = [1.12, 0.45];
+
+/// The exponent glyph coverage in `mode` is raised to when drawn in premultiplied `fill`, on
+/// Apple platforms (`apple`) or Windows (`windows`) or neither. With smoothing off on Linux,
+/// Windows and the web it stands in for the text gamma a browser's grayscale antialiasing
+/// applies there: light text on a dark page draws heavier and dark text on a light one a little
+/// lighter than coverage blended as is, keyed by the text's luminance. On macOS and iOS coverage
+/// is drawn as is in every mode: CoreText with smoothing off, and Safari and Chrome with
+/// `-webkit-font-smoothing: antialiased`, apply no text gamma (measured on macOS 15.3 with
+/// Chrome 156: the same ink as CoreText, where the gamma drew light-on-dark text up to 24%
+/// heavier). With smoothing on, CoreText's dilation does that job, and with DirectWrite on
+/// Windows Skia's gamma tables do; coverage is drawn as is.
+pub(crate) fn coverage_exponent(mode: FontSmoothing, fill: [f32; 4], apple: bool, windows: bool) -> f32 {
+    // DirectWrite masks already carry Skia's gamma for their text's luminance.
+    let direct_write = mode == FontSmoothing::DirectWrite && windows;
+    if apple || direct_write || matches!(mode, FontSmoothing::On | FontSmoothing::Windfoil) || fill[3] <= 0.0 {
+        return 1.0;
+    }
+    let luma = (0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2]) / fill[3];
+    TEXT_GAMMA[0] + (TEXT_GAMMA[1] - TEXT_GAMMA[0]) * luma.clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

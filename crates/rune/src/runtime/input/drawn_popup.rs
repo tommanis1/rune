@@ -80,9 +80,10 @@ fn flatten(menu: &PopupMenu, indent: f32, out: &mut Vec<Kind>) {
                 key: item.key_equivalent.as_ref().map(key_label), indent,
             }),
             Entry::Separator => out.push(Kind::Separator),
-            Entry::Submenu(title, sub) => {
+            // A submenu that doesn't open shows its title alone, as a native one greys out.
+            Entry::Submenu(title, sub, opens) => {
                 out.push(Kind::Heading(title.clone(), indent));
-                flatten(sub, indent + INDENT, out);
+                if *opens { flatten(sub, indent + INDENT, out); }
             }
         }
     }

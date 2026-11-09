@@ -312,10 +312,10 @@ impl Renderer {
             if !t.rows.is_empty() {
                 let mut rows = col().key("tbc").w_full().clip_rounded(body.radius);
                 for (i, cells) in t.rows.iter().enumerate() {
-                    if i > 0 {
-                        rows = rows.child(rule(format!("s{i}")));
-                    }
-                    rows = rows.child(row_at(i, cells));
+                    // `tbody tr:not(:last-child) td { border-bottom: 0.5px }`: a border that
+                    // takes a whole device pixel of the row, as Chromium lays it out.
+                    let row = row_at(i, cells);
+                    rows = rows.child(if i + 1 < t.rows.len() { row.border_sides([0.0, 0.0, 0.5, 0.0], s.table_rule).border_layout() } else { row });
                 }
                 let card = col().key("tb").w_full().radius(body.radius).fill(body.fill);
                 frame = frame.child(body.shadows.iter().fold(card, |c, sh| c.box_shadow(*sh)).child(rows));
@@ -383,7 +383,7 @@ impl Renderer {
             let align = if self.s.table_align { t.align.get(j).copied().unwrap_or_default() } else { Align::Start };
             let content = self
                 .with_reveal(
-                    rich(inl.text.clone(), self.spans(inl, font.size))
+                    rich(inl.text.clone(), self.spans(inl, font))
                         .font(font)
                         .color(color)
                         .align(align),
@@ -434,7 +434,7 @@ impl Renderer {
             font_key(body),
             cap.to_bits(),
             self.s.inline_code_scale.to_bits(),
-            self.s.inline_code_weight.to_bits(),
+            (self.s.inline_code_weight.to_bits(), self.s.inline_code_pad.to_bits()),
             self.s.table_pad.map(f32::to_bits),
             self.head_pad().map(f32::to_bits),
             self.s.table_flush_left,
@@ -452,7 +452,7 @@ impl Renderer {
                     if inl.text.is_empty() {
                         continue;
                     }
-                    let spans = self.spans(inl, font.size);
+                    let spans = self.spans(inl, font);
                     // Unrounded, as a browser's table layout sums them; a hair over, so a cell at
                     // its column's natural width never wraps its last word.
                     let (min, max) = rune::text::content_widths(&inl.text, &spans, font);

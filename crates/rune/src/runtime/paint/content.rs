@@ -108,6 +108,11 @@ impl<S: 'static> Runtime<S> {
             let turn = looped + if self.scene.store().has(n.id, P_ICON_TURN) {
                 self.scene.get(n.id, P_ICON_TURN).unwrap_or(n.vis.icon_turn)
             } else { n.vis.icon_turn };
+            // `El::mirror_in_rtl`: the drawing mirrors (its turn already runs the other way).
+            let facing = match (n.flow, n.vis.mirror_rtl) {
+                (crate::el::Flow::Rtl, true) => crate::text::Facing::Mirrored,
+                _ => crate::text::Facing::Upright,
+            };
             let tk = if cover.is_some() { 1.0 } else { sc };
             let raster = if cover.is_some() { 1.0 } else { scale_motion.raster(sc, rest) };
             if cover.is_none() && scale_motion == ScaleMotion::Live {
@@ -128,9 +133,10 @@ impl<S: 'static> Runtime<S> {
                 (drawn / zoom.max(1e-4)).round().max(1.0) as u32
             };
             let pos = [(r[0] + r[2] - drawn) * 0.5, (r[1] + r[3] - drawn) * 0.5];
-            // An icon that paints its own colours draws as its image, upright, faded only by the
+            // An icon that paints its own colours draws as its image (or its silhouette in
+            // `color`, `El::icon_one_color`), upright, faded only by the
             // element's opacity and its colour's alpha.
-            if drawn > 1e-4 && let Some(pixels) = self.text.color_icon(ic, px, color) {
+            if drawn > 1e-4 && let Some(pixels) = self.text.color_icon(ic, px, color, n.vis.icon_one_color) {
                 if let Some(image) = self.images.place(pixels, [drawn, drawn]) {
                     self.instances.push(Instance {
                         rect: [pos[0], pos[1], drawn, drawn],
@@ -143,7 +149,7 @@ impl<S: 'static> Runtime<S> {
                         fade: crate::render::pack_fade(fade, clip, clip),
                     });
                 }
-            } else if drawn > 1e-4 && let Some(q) = self.text.icon_quad(ic, px, pos) {
+            } else if drawn > 1e-4 && let Some(q) = self.text.icon_quad_facing(ic, px, pos, facing) {
                 self.push_icon(icon_inst(&q, pos, drawn, turn, premul(color, o, srgb), clip, fade));
             }
         } else if let (Some(spec), Some(layout)) = (&n.text, &n.text_layout) {
@@ -164,14 +170,20 @@ impl<S: 'static> Runtime<S> {
             if cover.is_none() && scale_motion == ScaleMotion::Live {
                 self.static_scale_settling = true;
             }
+            // Text whose scale moves draws from its outlines, magnified to `tk`: crisp all the way,
+            // and the same outline on the frame it lands as the atlas mask it rests as.
+            let place_masks = self.text.begin_text(node_id.0, cover.is_none() && scale_motion != ScaleMotion::Still)
+                .into_iter().any(|e| e == crate::text::outline::PathEffect::PlaceMasks);
+            let direct = self.text.emit() == crate::text::outline::Emit::Outline;
             let ins = n.inset.map(|v| v * zk * s);
             let (x0, x1) = (zr[0] + ins[0], zr[2] - ins[2]);
-            let mut origin = [text_x(spec, x0, x1, (layout.full_width() * tk).ceil()), zr[1] + ins[1]];
+            let mut origin = [text_x(spec, x0, x1, (layout.full_width() * tk).ceil(), crate::el::Flow::of_layout(layout)), zr[1] + ins[1]];
             // A gliding box's glyphs and decorations lay out from its nearest whole pixel and move the rest.
-            let glide = if gliding && cover.is_none() && scale_motion == ScaleMotion::Still {
-                [pixel_snap::text_glide(r[0]), pixel_snap::text_glide(r[1])]
+            // Within a 64th of a pixel they don't move, but still lay out from that pixel, as at rest.
+            let (glide, off) = if gliding && cover.is_none() && scale_motion == ScaleMotion::Still {
+                ([pixel_snap::text_glide(r[0]), pixel_snap::text_glide(r[1])], [r[0] - r[0].round(), r[1] - r[1].round()])
             } else {
-                [0.0; 2]
+                ([0.0; 2], [0.0; 2])
             };
             let mut clip = clip;
             if let Some(inp) = n.input.as_ref().filter(|i| i.single_line) {
@@ -181,7 +193,7 @@ impl<S: 'static> Runtime<S> {
                     clip = [clip[0].max(x0), clip[1], clip[2].min(x1), clip[3]];
                 }
             }
-            let rest_origin = [origin[0] - glide[0], origin[1] - glide[1]];
+            let rest_origin = [origin[0] - off[0], origin[1] - off[1]];
             // Paragraph block backgrounds, quote bars and list markers.
             if spec.blocks.iter().any(|&b| b != crate::edit::Block::Paragraph) {
                 emit_block_decorations(
@@ -207,17 +219,27 @@ impl<S: 'static> Runtime<S> {
             }
             // Text fields: selection under the text, placeholder, caret over it.
             let mut caret = None;
+            // A field's selected display bytes and the ink its `El::selection_style` gives them.
+            let mut field_ink: Option<(usize, usize, [f32; 4])> = None;
             if let Some(inp) = &n.input {
                 let e = &inp.edit;
                 let departing = self.flights.iter().any(|f| f.departs(&n.path, n.key.as_deref())
                     && f.alphas(f.destination, now, self.reduced_motion).0 > 0.0);
-                if e.text.is_empty() && e.preedit.is_none() && !inp.placeholder.is_empty() && !departing {
+                if e.text.is_empty() && e.preedit().is_none() && !inp.placeholder.is_empty() && !departing {
                     let pl_indent = spec.blocks.first().map_or(0.0, |b| (b.indent_pt(spec.style.size) * s).round() * tk);
-                    let pl_origin = [rest_origin[0] + pl_indent, rest_origin[1]];
+                    // A one-line field's placeholder stays on its line, cut by the field's clip, as its
+                    // text does; a multi-line field's wraps at its width.
+                    let wrap = (!inp.single_line).then(|| (w - pl_indent).max(1.0) / tk.max(1e-4));
+                    let options = crate::text::RichLayoutOptions::new().flow(spec.flow);
+                    let pl = self.text.layout_rich_with(&inp.placeholder, &[], spec.style, s, wrap, options);
+                    // Right to left it ends at the field's start edge, its right.
+                    let pl_x = match (spec.flow, wrap) {
+                        (crate::el::Flow::Ltr, _) => rest_origin[0] + pl_indent,
+                        (crate::el::Flow::Rtl, Some(_)) => rest_origin[0],
+                        (crate::el::Flow::Rtl, None) => rest_origin[0] - pl_indent - (pl.full_width() * tk).ceil(),
+                    };
+                    let pl_origin = [pl_x, rest_origin[1]];
                     let pl_r_origin = if scale_motion == ScaleMotion::Still { pl_origin } else { [0.0, 0.0] };
-                    // a single-line field's placeholder stays on its line (clipped like typed text), as a native field's does
-                    let pl_wrap = (!inp.single_line).then(|| (w - pl_indent).max(1.0) / tk.max(1e-4));
-                    let pl = self.text.layout_rich(&inp.placeholder, &[], spec.style, s, pl_wrap);
                     self.glyph_scratch.clear();
                     self.text.set_glyph_inks(inp.placeholder_color, &[]);
                     self.text.set_glide(glide);
@@ -231,13 +253,19 @@ impl<S: 'static> Runtime<S> {
                 }
                 if e.focused && !departing {
                     let (a, b) = e.range();
-                    if a != b && e.preedit.is_none() {
+                    if a != b && e.preedit().is_none() {
                         let (da, db) = e.display_selection_range(a, b);
+                        // An inactive window paints a field's selection in its inactive pair, as a browser does.
+                        let (highlight, ink) = inp.selection_style.map_or((inp.selection, None), |st| st.pick(self.window_focused != Some(false)));
                         selectable::push_field_selection(&mut self.instances, layout, da, db,
-                            origin, tk, premul(inp.selection, o, srgb), s, clip, fade);
+                            origin, tk, premul(highlight, o, srgb), s, clip, fade);
+                        field_ink = ink.map(|c| (da, db, premul(c, o, srgb)));
                     }
-                    caret = input_caret;
-                    if let Some((_, _)) = &e.preedit
+                    // A range selection hides the caret, as a browser's field and a native one do.
+                    if a == b || e.is_composing() {
+                        caret = input_caret;
+                    }
+                    if e.is_composing()
                         && let (_, Some((pa, pb))) = e.display()
                     {
                         for (bb, _) in crate::text::range_boxes(layout, pa, pb, false) {
@@ -248,6 +276,23 @@ impl<S: 'static> Runtime<S> {
                                 clip,
                                 fade,
                             ));
+                        }
+                    }
+                }
+                // Misspelled words (`El::spellcheck`), but the one the caret is typing.
+                if inp.spellcheck && !e.is_secure() && e.preedit().is_none() && !departing {
+                    let found = crate::spell::misspelled(&e.text);
+                    // The word typing left the caret in waits unmarked until the pause ends (`spell::pause`).
+                    let caret = if e.focused { crate::spell::pause::observe(&mut self.spell_watch, &n.path, &e.text, e.range(), self.clock) } else { None };
+                    let color = premul(SPELLING, o, srgb);
+                    for &(a, b) in found.iter().filter(|&&(a, b)| caret.is_none_or(|c| c < a || c > b)) {
+                        let (da, db) = e.display_selection_range(a, b);
+                        for (bb, line) in crate::text::range_boxes(layout, da, db, false) {
+                            let Some(m) = layout.get(line).map(|l| *l.metrics()) else { continue };
+                            // Its top a point under the baseline, as Chromium's.
+                            let top = origin[1] + (m.baseline + s) * tk;
+                            let (x0, x1) = (origin[0] + bb.x0 as f32 * tk, origin[0] + bb.x1 as f32 * tk);
+                            push_spelling_marker(&mut self.instances, x0, x1, top, s * tk, color, clip, fade);
                         }
                     }
                 }
@@ -263,7 +308,7 @@ impl<S: 'static> Runtime<S> {
             let drawn_spans = n.elided.map(|e| e.spans(&spec.spans));
             let spans = drawn_spans.as_deref().unwrap_or(&spec.spans);
             let drawn_rings = n.elided.map(|e| e.rings(&spec.rings));
-            self.text.decorations_with_rings(layout, spans, drawn_rings.as_deref().unwrap_or(&spec.rings), s, d_origin, &mut self.deco_scratch);
+            self.text.decorations_with_rings(layout, spans, drawn_rings.as_deref().unwrap_or(&spec.rings), spec.span_radius, s, d_origin, &mut self.deco_scratch);
             let drawn_len = n.elided.map_or(spec.content.len(), |e| e.drawn_len(spec.content.len()));
             if !spec.highlights.is_empty() {
                 let drawn = n.elided.map(|e| e.highlights(&spec.highlights));
@@ -304,6 +349,8 @@ impl<S: 'static> Runtime<S> {
                 if let Some((rc, rw)) = d.ring {
                     inst.border = premul(rc, o * alpha, srgb);
                     inst.params[0] = rw;
+                    // The opacity the colours carry, so the ring hides the chip's fill by its own alpha.
+                    inst.params[3] = o * alpha;
                 }
                 self.instances.push(inst);
             }
@@ -389,12 +436,20 @@ impl<S: 'static> Runtime<S> {
                 } else {
                     f32::NEG_INFINITY..f32::INFINITY
                 };
-                let bytes = reveal.is_some() || !link_fx.is_empty() || has_hl_fg;
+                let bytes = reveal.is_some() || !link_fx.is_empty() || has_hl_fg || field_ink.is_some();
                 // A secret's glyphs aren't kept past the frame that draws them.
-                if spec.redacted || n.input.as_ref().is_some_and(|i| i.edit.is_secure()) {
-                    self.text.glyphs_in_band(layout, r_origin, raster, bytes, band, &mut self.glyph_scratch);
+                let secret = spec.redacted || n.input.as_ref().is_some_and(|i| i.edit.is_secure());
+                if direct || secret {
+                    self.text.glyphs_in_band(layout, r_origin, raster, bytes, band.clone(), &mut self.glyph_scratch);
                 } else {
-                    self.text.glyphs_in_band_cached(layout, r_origin, raster, bytes, band, &mut self.glyph_scratch);
+                    self.text.glyphs_in_band_cached(layout, r_origin, raster, bytes, band.clone(), &mut self.glyph_scratch);
+                }
+                if place_masks && !secret {
+                    // Landing: the masks the next frame draws, placed now and not drawn.
+                    let mut masks = Vec::new();
+                    self.text.set_emit(crate::text::outline::Emit::Atlas);
+                    self.text.glyphs_in_band_cached(layout, r_origin, raster, bytes, band, &mut masks);
+                    self.text.set_emit(crate::text::outline::Emit::Outline);
                 }
                 tk / raster
             };
@@ -416,6 +471,11 @@ impl<S: 'static> Runtime<S> {
                     && let Some(c) = spec.spans.get(q.ink as usize - 1).and_then(|sp| sp.color)
                 {
                     f = premul(c, o, srgb);
+                }
+                if let Some((a, b, c)) = field_ink
+                    && (a..b).contains(&(q.byte as usize))
+                {
+                    f = c;
                 }
                 if has_hl_fg
                     && let Some(c) = spec.highlights.iter().rev().find_map(|h| {
@@ -442,12 +502,41 @@ impl<S: 'static> Runtime<S> {
             if let (Some(c), Some(inp)) = (caret, &n.input) {
                 self.instances.push(rect_inst(c, premul(inp.caret, o, srgb), 0.0, clip, fade));
             }
+            self.text.set_emit(crate::text::outline::Emit::Atlas);
         }
     }
 
     fn push_icon(&mut self, inst: Instance) {
         if self.paint_rank.is_some() && inst.uv[2] > 0.0 { self.icon_aprons.push(apron_key(&inst)); }
         self.instances.push(inst);
+    }
+
+    /// The rectangle a live or truncated text clips its glyphs to (edges, device pixels), its
+    /// box, and whether it runs past that box; `None` for other text.
+    pub(super) fn text_clip(&self, i: usize, (r, r_exact): ([f32; 4], [f32; 4]), sc: f32, clip: [f32; 4]) -> Option<([f32; 4], [f32; 4], bool)> {
+        let s = self.env.scale;
+        let n = &self.nodes[i];
+        let (Some(spec), Some(layout)) = (&n.text, &n.text_layout) else { return None };
+        if !(spec.truncate_fade || spec.live.is_some()) { return None; }
+        let ins = n.inset.map(|v| v * sc * s);
+        let mut bounds = [r[0] + ins[0], r[1] + ins[1], r[2] - ins[2], r[3] - ins[3]];
+        // Layout width already includes display scale `s`; bounds also include the
+        // element/ancestor transform `sc`. Compare both after that transform. A text fades
+        // only when it runs past its laid-out box and the box drawn now: snapping each edge
+        // to a whole pixel can leave the drawn box a sliver short, and a box springing to a
+        // new layout (`animate_layout`, a flight) is short until it lands. A text that fits
+        // isn't clipped by either.
+        let exact = r_exact[2] - r_exact[0] - ins[0] - ins[2];
+        let laid_out = (n.local.w - n.inset[0] - n.inset[2]).max(0.0) * s;
+        let overflows = layout.full_width() > laid_out + 0.5
+            && layout.full_width() * sc > (bounds[2] - bounds[0]).max(exact) + 0.5 * sc;
+        // A right-to-left paragraph runs out past its left edge.
+        match (overflows, crate::el::Flow::of_layout(layout)) {
+            (true, _) => {}
+            (false, crate::el::Flow::Ltr) => bounds[2] = bounds[2].max(bounds[0] + exact.max(layout.full_width() * sc)),
+            (false, crate::el::Flow::Rtl) => bounds[0] = bounds[0].min(bounds[2] - exact.max(layout.full_width() * sc)),
+        }
+        Some((intersect(clip, bounds), bounds, overflows))
     }
 
     /// Text-only clipping leaves the box's fill/border and descendants untouched.
@@ -462,31 +551,19 @@ impl<S: 'static> Runtime<S> {
         fade_origin: [f32; 4],
     ) {
         let s = self.env.scale;
-        let n = &self.nodes[i];
-        if let (Some(spec), Some(layout)) = (&n.text, &n.text_layout)
-            && (spec.truncate_fade || spec.live.is_some())
+        if let Some((text_clip, bounds, overflows)) = self.text_clip(i, (r, r_exact), sc, clip)
+            && let Some(spec) = &self.nodes[i].text
         {
-            let ins = n.inset.map(|v| v * sc * s);
-            let mut bounds = [r[0] + ins[0], r[1] + ins[1], r[2] - ins[2], r[3] - ins[3]];
             let mut widths = fade;
             let mut origins = fade_origin;
-            // Layout width already includes display scale `s`; bounds also include the
-            // element/ancestor transform `sc`. Compare both after that transform. A text fades
-            // only when it runs past its laid-out box and the box drawn now: snapping each edge
-            // to a whole pixel can leave the drawn box a sliver short, and a box springing to a
-            // new layout (`animate_layout`, a flight) is short until it lands. A text that fits
-            // isn't clipped by either.
-            let exact = r_exact[2] - r_exact[0] - ins[0] - ins[2];
-            let laid_out = (n.local.w - n.inset[0] - n.inset[2]).max(0.0) * s;
-            let overflows = layout.full_width() > laid_out + 0.5
-                && layout.full_width() * sc > (bounds[2] - bounds[0]).max(exact) + 0.5 * sc;
-            if !overflows {
-                bounds[2] = bounds[2].max(bounds[0] + exact.max(layout.full_width() * sc));
-            }
-            let text_clip = intersect(clip, bounds);
             if spec.truncate_fade && overflows {
                 let width = (spec.style.size * spec.fade_em * sc * s).min((bounds[2] - bounds[0]).max(0.0));
-                let own = if spec.align == Align::End { [width, 0.0, 0.0, 0.0] }
+                // The fade is on the end of the line it sits in, as a web mask on its parent flips
+                // with `dir`, so a Latin title (`Direction::Auto`) in a right-to-left row fades on
+                // the left.
+                let n = &self.nodes[i];
+                let line = n.parent.map_or(n.flow, |p| self.nodes[p].flow);
+                let own = if (spec.align == Align::End) != (line == crate::el::Flow::Rtl) { [width, 0.0, 0.0, 0.0] }
                     else { [0.0, 0.0, width, 0.0] };
                 inherit_fade(&mut widths, &mut origins, bounds, own);
             }
@@ -498,4 +575,28 @@ impl<S: 'static> Runtime<S> {
             }
         }
     }
+}
+
+/// A misspelled word's marker: Chromium's red, on macOS a row of dots and elsewhere a wavy line.
+/// (Linear light: #FF3B30 on macOS, #FF0000 elsewhere.)
+const SPELLING: Color = if cfg!(target_os = "macos") { Color { r: 1.0, g: 0.0437, b: 0.0296, a: 1.0 } } else { Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 } };
+
+/// The spelling marker from device x `x0` to `x1`, its top at `y`, `k` device px a point: on
+/// macOS 3 pt dots every 4 pt, elsewhere Chromium's 1 pt line waving 2 pt down and back every 6 pt.
+#[allow(clippy::too_many_arguments)]
+fn push_spelling_marker(out: &mut Vec<Instance>, x0: f32, x1: f32, y: f32, k: f32, color: [f32; 4], clip: [f32; 4], fade: [f32; 4]) {
+    if cfg!(target_os = "macos") {
+        let (d, step) = (3.0 * k, 4.0 * k);
+        let count = ((x1 - x0 - d) / step).floor().max(0.0) as usize + 1;
+        let x = x0 + ((x1 - x0) - (count - 1) as f32 * step - d) / 2.0;
+        out.extend((0..count).map(|n| rect_inst([x + n as f32 * step, y, d, d], color, d / 2.0, clip, fade)));
+        return;
+    }
+    const WAVE: [f32; 6] = [0.0, 1.0, 2.0, 2.0, 1.0, 0.0];
+    let t = k.max(1.0).round();
+    let start = x0.round();
+    out.extend((0..(x1.round() - start).max(0.0) as usize).map(|n| {
+        let wave = WAVE[(n as f32 / k) as usize % WAVE.len()];
+        rect_inst([start + n as f32, (y + wave * k).round(), 1.0, t], color, 0.0, clip, fade)
+    }));
 }

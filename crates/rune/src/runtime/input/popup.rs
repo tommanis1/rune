@@ -22,6 +22,9 @@ impl<S: 'static> Runtime<S> {
             None => self.trace_event("popup-menu:cancel"),
         }
         let mut one = self.transaction();
+        if let (Some(field), Some(id)) = (request.field, picked) {
+            self.field_menu_pick(*field, id, &mut one);
+        }
         (request.on_pick)(states!(self), picked, &mut one);
         self.latch_requests(&mut one);
         merge(&mut self.pending, one);
@@ -67,7 +70,7 @@ impl<S: 'static> Runtime<S> {
     pub(crate) fn release_pointer_for_popup(&mut self) -> bool {
         // A drawn menu showing owns the pointer: it was released when the menu opened.
         if self.drawn_popup_open() { return false; }
-        if self.popups.is_empty() || (self.pointer.is_none() && self.capture.is_none() && self.secondary_capture.is_none()) {
+        if self.popups.is_empty() || (self.pointer.is_none() && !self.pointer_captured()) {
             return false;
         }
         self.cancel_pointer();

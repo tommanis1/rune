@@ -54,6 +54,7 @@ STALL_SHARE = 0.25
 MIN_AREA = 1.0
 ANIMATED = 1  # flags: a motion of its own (a spring, a stack, a loop) moves it this frame
 SCROLLING = 4  # flags: under a scroll viewport whose offset moved this frame
+LOOPING = 32  # flags: runs a loop of its own (a spinner, a sheen, a busy ring's dots)
 BLANK = 64  # flags: draws nothing and holds nothing (a hit or hover zone, a spacer)
 SETTLE_TAIL_MS = 250.0  # a motion's own sub-visible tail after it hides what it moves
 
@@ -144,6 +145,8 @@ def loop_ids(els, moved):
                 group_busy[els[id].parent].add(j)
     life = {e.id: len(e.hist) for e in els.values()}
     out = {id for id in busy if life.get(id, 0) >= 60 and len(busy[id]) >= 0.5 * life[id]}
+    # One the trace marks as running a loop of its own is one however briefly it shows.
+    out |= {e.id for e in els.values() if any(st[6] & LOOPING for st in e.hist)}
     groups = {p for p, ks in group_busy.items() if p in life and life[p] >= 60 and len(ks) >= 0.5 * life[p]}
     out |= {e.id for e in els.values() if e.parent in groups}
     # What a loop carries moves with it.
@@ -610,6 +613,10 @@ def analyze(path, script=None):
                     seg.append(i)
                 elif not boundary and seg and h[i][0] - h[seg[-1]][0] <= SEG_GAP and i < len(h) - 1:
                     continue
+                # A move starts where it first shows: what it did before (laid out in a panel
+                # that hasn't opened yet) nobody saw.
+                while seg and (h[seg[0]][5] <= 0.05 or h[seg[0]][7] == 0 or not h[seg[0]][8]):
+                    seg.pop(0)
                 if (not moving or i == len(h) - 1) and len(seg) >= 4:
                     vals = [h[seg[0] - 1][edge]] + [h[j][edge] for j in seg]
                     vals = braking(e, h, seg, edge, vals)
@@ -676,6 +683,11 @@ def analyze(path, script=None):
                 pts = [h[seg[0] - 1]] + [h[j] for j in seg]
                 # The route starts where a retarget's braking ends, as the edges' checks do.
                 pts = pts[max(len(pts) - len(braking(e, h, seg, edge, [p[edge] for p in pts])) for edge in (1, 2)):]
+                # So does a step the trace marks as designed (a column landing at its new width).
+                pts = pts[max((j for j in range(1, len(pts)) if (pts[j][6] >> 8) & 1), default=0):]
+                if len(pts) < 3:
+                    seg = [i] if boundary and changed else []
+                    continue
                 k0, k1 = pts[1][0], pts[-1][0]
                 hidden = all(p[5] <= 0.05 or not p[8] for p in pts)
                 held = any(pressing[p[0]] or p[6] & (4 | BLANK) for p in pts)

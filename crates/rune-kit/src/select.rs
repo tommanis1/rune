@@ -1,5 +1,10 @@
 //! Select (`@opencode/ui` forms/select): an inline trigger and a listbox of menu items with a
 //! check on the selected option, optionally grouped.
+//!
+//! Whether it's open is the app's (`open`, `on_close`); how it opens and closes is Rune's
+//! modal stack (`runtime/input/modal_focus.rs`): it takes focus, Escape and a press outside
+//! close it, and focus goes back to the trigger, without a ring when the pointer opened it, as
+//! Desktop's menu machine has it (`ui/src/navigation/menu/machine.ts`).
 
 use rune::{El, Icon, TextStyle, Tx, col, el, icon, row, text};
 
@@ -306,8 +311,9 @@ impl Select {
                 } else if self.state == State::Focus && !self.open {
                     t = t.outline(1.0, -1.0, c.border_focus).no_focus_ring();
                 } else {
-                    t = shadows(k, t, &k.elevation.button_neutral);
-                    t = if self.open { t.no_focus_ring() } else { t.focus_within_ring(1.0, -1.0, c.border_focus) };
+                    t = shadows(k, t, k.elevation.input());
+                    // select.css:73,100-103: focus inside drops the shadow and the hover tint.
+                    t = if self.open { t.no_focus_ring() } else { t.focus_within_ring(1.0, -1.0, c.border_focus).focus_within_flat() };
                     if self.state == State::Rest && !self.open {
                         t = t.hover(c.hover);
                     }
