@@ -7,6 +7,12 @@ use rune::{Color, El, Icon, col, el, icon, row, spacer, text};
 
 use crate::Kit;
 
+/// How often a spinner's squares change: a 1–2 s fade needs no more.
+const SPINNER_FPS: f32 = 30.0;
+/// A square's fade (low, up to high and back, eased in and out) as cycle stops: outer squares 0.15–0.35, inner 0.4–1.
+const OUTER: &[(f32, f32)] = &[(0.0, 0.15), (0.125, 0.1793), (0.25, 0.25), (0.375, 0.3207), (0.5, 0.35), (0.625, 0.3207), (0.75, 0.25), (0.875, 0.1793), (1.0, 0.15)];
+const INNER: &[(f32, f32)] = &[(0.0, 0.4), (0.125, 0.4879), (0.25, 0.7), (0.375, 0.9121), (0.5, 1.0), (0.625, 0.9121), (0.75, 0.7), (0.875, 0.4879), (1.0, 0.4)];
+
 /// The 4×4 pulse grid: corners hidden, outer squares dim (0.15), inner squares 0.4.
 pub struct Spinner {
     size: f32,
@@ -41,8 +47,15 @@ impl Spinner {
                 el().key(format!("sq{i}")).size(3.0 * u, 3.0 * u).absolute(x * u, y * u).radius(u).fill(ink).a11y_hidden()
                     // Web chooses random 1–2 s periods and 0–1.5 s delays at module load.
                     // A fixed per-cell seed preserves that timing range in replays/goldens.
-                    .looping(rune_motion::LoopSpec::opacity(1.0 + ((i * 37) % 101) as f64 / 100.0,
-                        ((i * 53) % 101) as f64 * 0.015, a, if outer { 0.35 } else { 1.0 })),
+                    // A wall-clock cycle at SPINNER_FPS: while only spinners move the window wakes at that rate,
+                    // not at every display frame (four spinners drew a whole window 118 times a second; 9 Nov).
+                    .looping(rune_motion::LoopSpec::cycle(rune_motion::Cycle {
+                        period: 1.0 + ((i * 37) % 101) as f32 / 100.0,
+                        phase: -(((i * 53) % 101) as f32 * 0.015) / (1.0 + ((i * 37) % 101) as f32 / 100.0),
+                        stops: if outer { OUTER } else { INNER },
+                        still: a,
+                        fps: SPINNER_FPS,
+                    })),
             );
         }
         e
