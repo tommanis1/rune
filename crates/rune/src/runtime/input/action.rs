@@ -138,7 +138,6 @@ pub(super) fn live_only_handler(action: &Action) -> Option<&'static str> {
     })
 }
 
-#[cfg(debug_assertions)]
 pub(super) fn action_path(action: &Action) -> Option<&str> {
     match action {
         Action::PointerMove(path, _) | Action::DrawnLayout(path, ..) | Action::Layout(path, _) | Action::Hover(path) | Action::HoverChange(path, _) | Action::SelectionChange(path, _) | Action::Press(path, _) | Action::DoublePress(path)
@@ -150,7 +149,6 @@ pub(super) fn action_path(action: &Action) -> Option<&str> {
 }
 
 /// The handler an action runs, for the stall warning.
-#[cfg(debug_assertions)]
 fn handler_name(action: &Action) -> &'static str {
     live_only_handler(action).unwrap_or(match action {
         Action::Physical(..) => "on_key",
@@ -169,7 +167,6 @@ fn handler_name(action: &Action) -> &'static str {
     })
 }
 
-#[cfg(debug_assertions)]
 fn stall_path(action: &Action) -> Option<&str> {
     match action {
         Action::Dismiss(path) | Action::AtBottom(path, _) | Action::FarFromBottom(path, _) | Action::VisibleRows(path, _)
@@ -264,7 +261,10 @@ impl<S: 'static> Runtime<S> {
         let (name, path, at) = (handler_name(&action), stall_path(&action).map(str::to_owned), self.handler_location(&action));
         let stall = crate::tooling::perf_warn::Stall::start();
         let timed = self.interaction_note(&action).map(|note| (note, crate::time::Instant::now()));
+        // The frame log names what ran, before `dispatch_action` takes the action.
+        let logged = crate::runtime::why_log::on().then(|| format!("{}@{}", handler_name(&action), stall_path(&action).unwrap_or("")));
         let ran = self.dispatch_action(action, tx);
+        if ran && let Some(h) = logged { crate::runtime::why_log::handler(h); }
         if ran && let Some((note, started)) = timed { self.interaction_ran(note, started); }
         #[cfg(debug_assertions)]
         if ran && name.starts_with("on_") { self.watch.meter.handler(name, path.as_deref(), at); }

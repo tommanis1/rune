@@ -2,7 +2,7 @@
 //! line per second that had frames, appended to FILE. Each line counts the frames, the commits by
 //! [`CommitWhy`](super::CommitWhy) bit, what kept the frames animating by [`AnimSource`](super::AnimSource) bit (and
 //! the frame passes that animate without a source bit: `build`, `rects`, `rows`, `reports`), the keys of the
-//! elements that loop, and the frames' total and slowest times. Unlike the headless frame log (`RUNE_FRAME_LOG`), it
+//! elements that loop, the app handlers that ran (and so committed), and the frames' total and slowest times. Unlike the headless frame log (`RUNE_FRAME_LOG`), it
 //! works in a real window and costs nothing when unset.
 
 use std::cell::RefCell;
@@ -24,6 +24,7 @@ struct Log {
     anim: [u32; 10],
     other: [u32; 4],
     loops: BTreeMap<String, u32>,
+    handlers: BTreeMap<String, u32>,
     total_ms: f64,
     max_ms: f64,
 }
@@ -32,7 +33,7 @@ thread_local! {
     static LOG: RefCell<Option<Log>> = RefCell::new(
         std::env::var_os("RUNE_FRAME_WHY")
             .and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok())
-            .map(|out| Log { out, second: Instant::now(), frames: 0, commits: 0, why: [0; 10], anim: [0; 10], other: [0; 4], loops: BTreeMap::new(), total_ms: 0.0, max_ms: 0.0 }),
+            .map(|out| Log { out, second: Instant::now(), frames: 0, commits: 0, why: [0; 10], anim: [0; 10], other: [0; 4], loops: BTreeMap::new(), handlers: BTreeMap::new(), total_ms: 0.0, max_ms: 0.0 }),
     );
 }
 
@@ -46,6 +47,11 @@ pub(crate) fn other(i: usize, animating: bool) {
     if animating {
         LOG.with(|l| if let Some(l) = l.borrow_mut().as_mut() { l.other[i] += 1 });
     }
+}
+
+/// An app handler ran (`on_press@path`), so the frame commits for input.
+pub(crate) fn handler(h: String) {
+    LOG.with(|l| if let Some(l) = l.borrow_mut().as_mut() { *l.handlers.entry(h).or_default() += 1 });
 }
 
 /// One frame ended: it took MS, committed for WHY (0: no commit), animated by ANIM bits when ANIMATING, with the
@@ -82,6 +88,7 @@ pub(crate) fn frame(ms: f64, why: u16, animating: bool, anim: u16, loops: impl I
                 "anim": named(&AnimSource::NAMES, &l.anim),
                 "other": named(&OTHER, &l.other),
                 "loops": l.loops.iter().take(8).map(|(k, n)| (k.clone(), serde_json::Value::from(*n))).collect::<serde_json::Map<_, _>>(),
+                "handlers": l.handlers.iter().take(8).map(|(k, n)| (k.clone(), serde_json::Value::from(*n))).collect::<serde_json::Map<_, _>>(),
                 "ms": (l.total_ms * 10.0).round() / 10.0,
                 "max_ms": (l.max_ms * 10.0).round() / 10.0,
             });
@@ -90,6 +97,7 @@ pub(crate) fn frame(ms: f64, why: u16, animating: bool, anim: u16, loops: impl I
             (l.frames, l.commits, l.total_ms, l.max_ms) = (0, 0, 0.0, 0.0);
             (l.why, l.anim, l.other) = ([0; 10], [0; 10], [0; 4]);
             l.loops.clear();
+            l.handlers.clear();
         }
     });
 }
