@@ -33,6 +33,10 @@ pub(super) struct Win {
     pub(super) alpha: Option<crate::render::surface_alpha::AlphaSurface>,
     /// Only a due timer asked for the next frame, which may then draw nothing new.
     pub(super) quiet: bool,
+    /// When a due timer first asked for a frame that hasn't come. Wayland sends no
+    /// `RedrawRequested` to a surface the compositor isn't showing (screen off, other
+    /// workspace) and says nothing else; the timer stays due and would spin the loop.
+    pub(super) asked: Option<Instant>,
     /// The last frame presented, while the window rests.
     pub(super) presented: Option<Presented>,
     /// Until when the window keeps presenting every refresh after a change (`STEADY`).

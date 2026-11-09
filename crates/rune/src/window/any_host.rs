@@ -123,9 +123,20 @@ impl<S: 'static> AnyHost for Host<S> {
                     }
                     None => true,
                 };
-                if frame && let Some(w) = &mut self.win {
-                    w.quiet = true;
-                    w.window.request_redraw();
+                let now = Instant::now();
+                match self.win.as_mut().filter(|_| frame) {
+                    // The frame asked for earlier never came: the compositor isn't showing the
+                    // surface. Treat it as occluded, so the timers run covered and `retry` looks again.
+                    Some(w) if w.asked.is_some_and(|at| now - at >= OCCLUDED_RETRY) => {
+                        w.asked = None;
+                        self.missed_frame(Missed::Occluded, false);
+                    }
+                    Some(w) => {
+                        w.asked.get_or_insert(now);
+                        w.quiet = true;
+                        w.window.request_redraw();
+                    }
+                    None => {}
                 }
             } else {
                 covered_step(&mut self.rt);
@@ -139,8 +150,12 @@ impl<S: 'static> AnyHost for Host<S> {
         // The next display tick consumes due timers too. Leaving an overdue timer
         // armed while its redraw waits for that tick would spin the event loop. Without a
         // running link, a timer due sooner than a frame waits a frame (`timer_deadline`).
-        let runtime = timer_deadline(&self.rt).filter(|_| !self.win.as_ref().is_some_and(Win::paced));
         let win = self.win.as_ref();
+        // An occluded window's timers run covered at most at its retry's pace (`missed_frame`).
+        let runtime = timer_deadline(&self.rt).filter(|_| !win.is_some_and(Win::paced))
+            .map(|t| win.filter(|w| w.occluded).and_then(|w| w.retry).map_or(t, |r| t.max(r)))
+            // A frame is asked for: wait for it, or until `new_events` gives it up.
+            .map(|t| win.and_then(|w| w.asked).map_or(t, |at| t.max(at + OCCLUDED_RETRY)));
         runtime.into_iter()
             .chain(win.and_then(|w| w.first_frame.deadline.map(|(retry, _)| retry)))
             .chain(win.and_then(|w| w.first_frame.ready_deadline()))

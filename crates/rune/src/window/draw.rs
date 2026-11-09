@@ -65,6 +65,7 @@ impl<S: 'static> Host<S> {
     pub(super) fn draw(&mut self, resizing: bool) {
         let launcher = self.launcher();
         let (Some(l), Some(_)) = (self.win.as_mut(), self.gpu.as_ref()) else { return };
+        l.asked = None;
         let hidden = launcher && !l.visible;
         if (!launcher && (!l.visible || l.occluded)) || l.minimized() {
             return self.covered_frame();
