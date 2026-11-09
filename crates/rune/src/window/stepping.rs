@@ -105,7 +105,10 @@ impl<S: 'static> Host<S> {
         self.rt.fit_held = false;
         let Some(mut request) = self.rt.window_frame.take() else { return };
         let (min, max) = self.options.size_limits(self.spec.min_size);
-        request.size = request.size.map(|size| crate::window::frame::clamp_size(size, min, max));
+        // Handlers size the window in the interface's points; the system takes its own, which
+        // the zoom (`Tx::set_ui_zoom`) makes larger.
+        let zoom = self.rt.ui_zoom.get();
+        request.size = request.size.map(|(w, h)| crate::window::frame::clamp_size((w * zoom, h * zoom), min, max));
         if let Some(size) = request.size {
             self.spec.size = size;
             self.args.size = None;
@@ -190,7 +193,7 @@ impl<S: 'static> Host<S> {
             sync_chrome(&mut self.rt, w, self.chrome, self.titlebar);
             let size = w.window.inner_size();
             w.resize_surface(&gpu.device, size);
-            let scale = w.window.scale_factor() as f32;
+            let scale = self.rt.ui_zoom.scale(w.window.scale_factor());
             self.rt.step_viewport((size.width as f32 / scale, size.height as f32 / scale), scale);
             // In this frame's layout, not the next one when `Moved` arrives.
             sync_screen_origin(&mut self.rt, &w.window);

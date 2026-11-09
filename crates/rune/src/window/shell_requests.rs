@@ -1,5 +1,5 @@
 //! What handlers and updates ask of the window itself, carried out by `Host::shell`:
-//! minimizing it and showing the title they set.
+//! minimizing it, showing the title they set and laying out at the zoom they set.
 use super::*;
 
 fn minimize_ignored(what: &str) {
@@ -29,5 +29,18 @@ impl<S: 'static> Host<S> {
     /// as it may be. A window created later opens with the current title (`try_create`).
     pub(super) fn show_title(&mut self) {
         if let Some(title) = self.rt.window_title.take_change() && let Some(w) = &self.win { w.window.set_title(title); }
+    }
+
+    /// `Tx::set_ui_zoom`: the window keeps its size on screen and lays out at the new scale,
+    /// the system's times the zoom, which layout, text and hit-testing all read.
+    pub(super) fn apply_zoom(&mut self) {
+        if !self.rt.ui_zoom.take_change() { return; }
+        let Some(w) = &self.win else { return };
+        let size = w.window.inner_size();
+        if size.width == 0 || size.height == 0 { return; }
+        let scale = self.rt.ui_zoom.scale(w.window.scale_factor());
+        self.rt.set_viewport((size.width as f32 / scale, size.height as f32 / scale), scale);
+        sync_chrome(&mut self.rt, w, self.chrome, self.titlebar);
+        w.window.request_redraw();
     }
 }

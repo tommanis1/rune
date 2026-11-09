@@ -24,7 +24,34 @@ impl Title {
     }
 }
 
+/// The interface zoom over the system's scale (`Tx::set_ui_zoom`), and whether the window has
+/// yet to lay out at the last one set. The window multiplies it into the scale it gives the
+/// runtime, so layout, text and hit-testing follow from that one number.
+#[derive(Debug)]
+pub(crate) struct Zoom { now: f32, changed: bool }
+
+impl Default for Zoom {
+    fn default() -> Self { Self { now: 1.0, changed: false } }
+}
+
+impl Zoom {
+    pub(super) fn set(&mut self, zoom: f32) {
+        let zoom = if zoom.is_finite() { zoom.clamp(0.25, 5.0) } else { 1.0 };
+        if zoom == self.now { return; }
+        self.now = zoom;
+        self.changed = true;
+    }
+    pub(crate) fn get(&self) -> f32 { self.now }
+    /// The system's `scale_factor` with the zoom multiplied in: the scale the runtime runs at.
+    pub(crate) fn scale(&self, system: f64) -> f32 { system as f32 * self.now }
+    /// Whether a zoom was set since the window last laid out at one.
+    pub(crate) fn take_change(&mut self) -> bool { std::mem::take(&mut self.changed) }
+}
+
 impl<S: 'static> Runtime<S> {
+    /// The interface zoom the last `Tx::set_ui_zoom` set; 1.0 before any.
+    pub fn ui_zoom(&self) -> f32 { self.ui_zoom.get() }
+
     /// Asks the window for the content's new height, on this commit's spring. The first
     /// commit, a viewport change and `Tx::instant` jump.
     pub(super) fn fit_window(&mut self, height: f32, tx: &Tx, first: bool) {

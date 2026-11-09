@@ -25,9 +25,11 @@ pub(super) fn sync_platform<S: 'static>(l: &mut Win, rt: &mut Runtime<S>, secure
     clipboard.flush(rt);
     if let Some(a) = rt.ime_area && l.ime_sent != Some(a) {
         l.ime_sent = Some(a);
+        // The interface's points, in the system's: `Tx::set_ui_zoom`.
+        let z = f64::from(rt.ui_zoom.get());
         l.window.set_ime_cursor_area(
-            LogicalPosition::new(a[0] as f64, a[1] as f64),
-            LogicalSize::new(a[2] as f64, a[3] as f64),
+            LogicalPosition::new(a[0] as f64 * z, a[1] as f64 * z),
+            LogicalSize::new(a[2] as f64 * z, a[3] as f64 * z),
         );
     }
 }

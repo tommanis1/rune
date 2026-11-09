@@ -67,6 +67,8 @@ pub struct Tx {
     /// `Tx::drop_point`.
     pub(crate) drop_point: Option<PointerEvent>,
     pub(crate) title: Option<String>,
+    /// `Tx::set_ui_zoom`.
+    pub(crate) ui_zoom: Option<f32>,
     pub(crate) open_urls: Vec<crate::open_url::Link>,
     pub(crate) trace: Option<TraceCalls>,
     pub(crate) popups: Vec<crate::popup_menu::Call>,
@@ -245,6 +247,14 @@ impl Tx {
     /// opened again. Headless `--tree` output shows it as `"title"`. An overlay has no title.
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = Some(title.into());
+    }
+
+    /// Zoom the whole window's interface by `zoom` after this handler: layout, text and
+    /// hit-testing all follow, as if the display's scale were `zoom` times larger. 1.0 is the
+    /// system's size; values are clamped to 0.25..=5.0. The window keeps its size on screen and
+    /// lays out again at the new number of points. Overlays keep the system's scale.
+    pub fn set_ui_zoom(&mut self, zoom: f32) {
+        self.ui_zoom = Some(zoom);
     }
 
     /// Open `url` in the system's default handler once this handler's frame is done: a browser

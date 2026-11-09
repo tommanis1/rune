@@ -539,7 +539,8 @@ impl<S: 'static> Runtime<S> {
     /// it queued any.
     fn report_rects(&mut self, quiet: bool, screen: bool) -> bool {
         let last = std::mem::take(if screen { &mut self.screen_fired } else { &mut self.layout_fired });
-        let (ox, oy) = if screen { self.window_origin } else { (0.0, 0.0) };
+        // Screen rects are in the system's points: the interface's times its zoom.
+        let (ox, oy, z) = if screen { (self.window_origin.0, self.window_origin.1, self.ui_zoom.get()) } else { (0.0, 0.0, 1.0) };
         let mut fired = HashMap::with_capacity_and_hasher(last.len(), Default::default());
         let mut queued = false;
         for i in 0..self.nodes.len() {
@@ -547,7 +548,7 @@ impl<S: 'static> Runtime<S> {
             if n.handlers.get().is_none_or(|h| if screen { h.on_screen_layout.is_none() } else { h.on_layout.is_none() }) || self.subtree_exiting(i) { continue; }
             let id = n.id;
             let [x, y, w, h] = self.laid_out(&self.nodes, i);
-            let r = [x + ox, y + oy, w, h];
+            let r = [x * z + ox, y * z + oy, w * z, h * z];
             if !quiet && moved(last.get(&id).copied(), Some(r)) {
                 let path = self.nodes[i].path.clone();
                 queued = true;
@@ -611,6 +612,17 @@ mod tests {
         frames(&mut rt, 4);
         assert_eq!(rt.state.local, [[10.0, 10.0, 100.0, 40.0]]);
         assert_eq!(rt.state.screen, [[410.0, 260.0, 100.0, 40.0]], "first layout, origin added");
+    }
+
+    #[test]
+    fn a_zoomed_screen_rect_is_in_the_systems_points() {
+        let mut rt = Runtime::new(S::default(), view, (300.0, 200.0), Env::new(true, 2.0));
+        rt.set_window_origin((400.0, 250.0));
+        rt.update(|_, tx| tx.set_ui_zoom(2.0));
+        rt.frame(0.0);
+        frames(&mut rt, 4);
+        assert_eq!(rt.state.local, [[10.0, 10.0, 100.0, 40.0]], "on_layout stays in the interface's points");
+        assert_eq!(rt.state.screen, [[420.0, 270.0, 200.0, 80.0]]);
     }
 
     #[test]

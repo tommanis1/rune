@@ -698,6 +698,8 @@ pub struct Runtime<S: 'static> {
     pub(crate) window_frame: Option<crate::window::frame::FrameRequest>,
     /// The window's title (`Tx::set_title`), from `AppSpec`'s.
     pub(crate) window_title: window_requests::Title,
+    /// The interface zoom (`Tx::set_ui_zoom`) over the system's scale.
+    pub(crate) ui_zoom: window_requests::Zoom,
     /// The window's height follows the root's natural height (`App::fit_content_height`).
     pub(crate) fit_height: bool,
     /// The content height last asked of the window.
@@ -1016,6 +1018,7 @@ impl<S: 'static> Runtime<S> {
             next_file_dialog: 0,
             window_frame: None,
             window_title: Default::default(),
+            ui_zoom: Default::default(),
             fit_height: false,
             fit_asked: None,
             page: Default::default(),

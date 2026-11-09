@@ -948,6 +948,27 @@ fn the_window_title_starts_from_the_spec_and_follows_set_title() {
     assert_eq!(rt.window_title.take_change(), Some("Draft"));
 }
 
+#[test]
+fn set_ui_zoom_is_clamped_and_reaches_the_window_once() {
+    fn view(_: &u32, _: &mut Cx<u32>) -> El { crate::el().size(100.0, 100.0) }
+    let spec = AppSpec::new("Zoom", (100.0, 100.0), || 0, view);
+    let mut rt = runtime_for(&spec, 0, (100.0, 100.0), Env { scale: 1.0, system_dark: true }, std::sync::Arc::new(|| {}));
+    rt.frame(0.0);
+    assert_eq!(rt.ui_zoom(), 1.0);
+    assert!(!rt.ui_zoom.take_change(), "no zoom set yet");
+    rt.update(|_, tx| tx.set_ui_zoom(1.5));
+    assert_eq!(rt.ui_zoom(), 1.5);
+    assert_eq!(rt.ui_zoom.scale(2.0), 3.0, "the window runs at the system's scale times the zoom");
+    assert!(rt.ui_zoom.take_change());
+    assert!(!rt.ui_zoom.take_change());
+    rt.update(|_, tx| tx.set_ui_zoom(1.5));
+    assert!(!rt.ui_zoom.take_change(), "the same zoom again is no change");
+    rt.update(|_, tx| tx.set_ui_zoom(40.0));
+    assert_eq!(rt.ui_zoom(), 5.0);
+    rt.update(|_, tx| tx.set_ui_zoom(f32::NAN));
+    assert_eq!(rt.ui_zoom(), 1.0);
+}
+
 #[path = "playground_cli_tests.rs"]
 mod playground_cli;
 

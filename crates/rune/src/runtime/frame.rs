@@ -209,6 +209,7 @@ impl<S: 'static> Runtime<S> {
             self.last_focused = None;
         }
         if let Some(title) = tx.title.take() { self.window_title.set(title); }
+        if let Some(zoom) = tx.ui_zoom.take() { self.ui_zoom.set(zoom); }
         if let Some(mut request) = tx.window_frame.take() {
             request.spring = (request.animate && !tx.instant && !self.reduced_motion).then(|| tx.motion.unwrap_or(motion::DEFAULT));
             self.window_frame = Some(self.window_frame.unwrap_or_default().merge(request));

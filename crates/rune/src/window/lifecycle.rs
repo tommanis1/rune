@@ -64,7 +64,7 @@ impl<S: 'static> Host<S> {
         if let (Some(w), Some((gpu, ..))) = (self.win.as_mut(), self.gpu.as_ref()) {
             let size = w.window.inner_size();
             w.resize_surface(&gpu.device, size);
-            let scale = w.window.scale_factor() as f32;
+            let scale = self.rt.ui_zoom.scale(w.window.scale_factor());
             self.rt.set_viewport((size.width as f32 / scale, size.height as f32 / scale), scale);
         }
         true
@@ -183,6 +183,7 @@ impl<S: 'static> Host<S> {
     /// opens the pop-up menu it asked for, if the window is still there to open it over.
     pub(super) fn shell(&mut self, event_loop: &ActiveEventLoop) {
         self.show_title();
+        self.apply_zoom();
         if self.rt.take_toggle_maximized() && let Some(w) = self.win.as_ref().filter(|w| w.visible) {
             chrome::toggle_maximized(&w.window);
         }

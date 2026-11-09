@@ -234,7 +234,7 @@ impl<S: 'static> Host<S> {
         if matches!(event, WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. }) { self.sync_origin(); }
         let (Some(l), Some((gpu, ..))) = (self.win.as_mut(), self.gpu.as_ref()) else { return };
         let rt = &mut self.rt;
-        let scale = l.window.scale_factor() as f32;
+        let scale = rt.ui_zoom.scale(l.window.scale_factor());
         let (chrome, titlebar) = (self.chrome, self.titlebar);
         // A finger presses through `WindowEvent::Touch`; the mouse events a system makes up
         // from it (Windows promotes touches) would press a second time.
@@ -278,7 +278,8 @@ impl<S: 'static> Host<S> {
                     if restored || origin_moved { l.window.request_redraw(); }
                     return;
                 }
-                let asked = self.frame_jump.take().is_some_and(|(w, h)| (w - viewport.0).abs() < 1.0 && (h - viewport.1).abs() < 1.0);
+                let zoom = rt.ui_zoom.get();
+                let asked = self.frame_jump.take().is_some_and(|(w, h)| (w - viewport.0 * zoom).abs() < 1.0 && (h - viewport.1 * zoom).abs() < 1.0);
                 if asked { rt.step_viewport(viewport, scale) } else { rt.set_viewport(viewport, scale) }
                 // The user is dragging the edge. AppKit commits the new size when this returns,
                 // and a frame drawn later would leave the old one stretched to it until then.
@@ -303,12 +304,12 @@ impl<S: 'static> Host<S> {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 #[cfg(target_os = "macos")]
                 if let Some(shadow) = &l.native.shadow { shadow.redraw(); }
-                let scale = scale_factor as f32;
+                let scale = rt.ui_zoom.scale(scale_factor);
                 let size = l.window.inner_size();
                 // Still the old scale's size: Windows resizes the window after this event.
                 #[cfg(target_os = "windows")]
                 let size = {
-                    let (width, height) = crate::window::frame::rescaled((size.width, size.height), f64::from(rt.env.scale), scale_factor);
+                    let (width, height) = crate::window::frame::rescaled((size.width, size.height), f64::from(rt.env.scale / rt.ui_zoom.get()), scale_factor);
                     winit::dpi::PhysicalSize::new(width, height)
                 };
                 if size.width > 0 && size.height > 0 {
@@ -386,9 +387,11 @@ impl<S: 'static> Host<S> {
                     }
                     if let Some(a) = rt.ime_area {
                         l.ime_sent = Some(a);
+                        // The interface's points, in the system's: `Tx::set_ui_zoom`.
+                        let z = f64::from(rt.ui_zoom.get());
                         l.window.set_ime_cursor_area(
-                            LogicalPosition::new(a[0] as f64, a[1] as f64),
-                            LogicalSize::new(a[2] as f64, a[3] as f64),
+                            LogicalPosition::new(a[0] as f64 * z, a[1] as f64 * z),
+                            LogicalSize::new(a[2] as f64 * z, a[3] as f64 * z),
                         );
                     }
                     l.apply_cursor(rt, true);

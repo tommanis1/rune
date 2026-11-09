@@ -146,7 +146,7 @@ impl<S: 'static> Host<S> {
         let alpha = (self.options.transparent && config.alpha_mode == wgpu::CompositeAlphaMode::PostMultiplied
             && gpu.adapter.get_info().backend != wgpu::Backend::Metal)
             .then(|| crate::render::surface_alpha::AlphaSurface::new(&gpu.device, target_format, (config.width, config.height)));
-        let scale = window.scale_factor() as f32;
+        let scale = self.rt.ui_zoom.scale(window.scale_factor());
         self.rt.set_system_dark(crate::platform::preferences::window_dark(&window, self.args.theme.as_deref()));
         self.rt.set_viewport((phys.width as f32 / scale, phys.height as f32 / scale), scale);
         if (self.shown || launcher) && !built {
@@ -231,7 +231,7 @@ impl<S: 'static> Host<S> {
             #[cfg(target_os = "macos")]
             if let Some(pacing) = &mut w.native.pacing { pacing.update_display(&w.window); }
             let size = w.window.inner_size();
-            let scale = w.window.scale_factor() as f32;
+            let scale = self.rt.ui_zoom.scale(w.window.scale_factor());
             if size.width > 0 && size.height > 0 {
                 w.resize_surface(&gpu.device, size);
                 self.rt.set_viewport((size.width as f32 / scale, size.height as f32 / scale), scale);
