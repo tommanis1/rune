@@ -42,7 +42,7 @@ fn overlay_input_switch_waits_for_owned_drag_release() {
     }
     let app = AppSpec {
         title: "input switch", size: (100.0, 100.0), min_size: None, init: Vec::new, view,
-        scenes: &[], fonts: &[], families: ("sans-serif", "monospace"), setup: None, poll: None, on_key: None,
+        scenes: &[], fonts: &[], families: ("sans-serif", "monospace"), setup: None, poll: None, on_key: None, on_wheel: None,
     };
     let spec = OverlaySpec::new("input switch", app.size, view).options(OverlayOptions { input: OverlayInput::All, ..Default::default() });
     let (mut overlay, handle) = Overlay::new(spec, Vec::new(), &app);

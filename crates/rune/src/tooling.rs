@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 use crate::compose::Compositor;
 use crate::edit::{Key, KeyEvent, Mods};
+use crate::WheelEvent;
 use crate::el::{El, Tx};
 use crate::render::write_png;
 use crate::runtime::{Cx, Env, Runtime, Waker};
@@ -37,6 +38,10 @@ pub struct AppSpec<S: 'static> {
     /// (`Tx::focused` tells which); true consumes the key. The rune README's "Key routing"
     /// lists the whole order.
     pub on_key: Option<fn(&mut S, &KeyEvent, &mut Tx) -> bool>,
+    /// Every wheel event, before the elements and scroll views under the pointer and before a
+    /// Ctrl + wheel becomes a pinch; true consumes it. For window-wide wheel bindings such as
+    /// Ctrl + wheel zoom, which a scroll view would otherwise take.
+    pub on_wheel: Option<fn(&mut S, &WheelEvent, &mut Tx) -> bool>,
 }
 
 impl<S: 'static> AppSpec<S> {
@@ -55,6 +60,7 @@ impl<S: 'static> AppSpec<S> {
             setup: None,
             poll: None,
             on_key: None,
+            on_wheel: None,
         }
     }
 }
@@ -137,6 +143,7 @@ pub(crate) fn runtime_for<S: 'static>(spec: &AppSpec<S>, state: S, size: (f32, f
     let mut rt = Runtime::with_text(state, spec.view, size, env, text);
     rt.poll = spec.poll;
     rt.on_key = spec.on_key;
+    rt.on_wheel = spec.on_wheel;
     rt.window_title.start(spec.title);
     rt.set_live_waker(waker.clone());
     #[cfg(feature = "hot")]
@@ -360,7 +367,7 @@ impl Kind {
 /// other kind.
 pub(crate) fn canvas_input<S: 'static>(rt: &mut Runtime<S>, kind: &Kind, (x, y): (f32, f32)) -> bool {
     match kind {
-        Kind::WheelEvent(ev) => rt.wheel_event(ev.at(x, y)),
+        Kind::WheelEvent(ev) => rt.wheel_input(ev.at(x, y), false),
         Kind::Magnify(ev) => rt.magnify_event(ev.at(x, y)),
         Kind::Rotate(ev) => rt.rotate_event(ev.at(x, y)),
         Kind::SmartMagnify => rt.smart_magnify(x, y),

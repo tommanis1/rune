@@ -438,9 +438,8 @@ impl<S: 'static> Host<S> {
                 let phase = gesture_phase(phase);
                 match rt.pointer() {
                     // Off macOS a trackpad pinch is a Ctrl + wheel.
-                    Some((x, y)) if !cfg!(target_os = "macos") && self.mods.control_key() && rt.pinch_wheel(x, y, dy) => {}
-                    Some((x, y)) => rt.wheel_event(crate::WheelEvent::new(dx, dy).at(x, y).mods(map_mods(self.mods))
-                        .phase(phase).precise(precise)),
+                    Some((x, y)) => rt.wheel_input(crate::WheelEvent::new(dx, dy).at(x, y).mods(map_mods(self.mods))
+                        .phase(phase).precise(precise), !cfg!(target_os = "macos") && self.mods.control_key()),
                     None if phase == crate::GesturePhase::Began => rt.wheel_began(),
                     None if phase == crate::GesturePhase::Ended => rt.wheel_ended(),
                     None => {}

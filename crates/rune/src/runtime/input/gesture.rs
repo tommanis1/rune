@@ -102,6 +102,30 @@ impl<S: 'static> Runtime<S> {
 
     /// A Ctrl + wheel `dy` at (x, y), which is how a trackpad pinch reaches Windows, Linux and
     /// web apps: a pinch when an `on_magnify` handler is there (true), else nothing.
+    /// A wheel event from the window: the app's `on_wheel` first, then (off macOS, with
+    /// `pinch` set for Ctrl held) a pinch for the `on_magnify` handlers under the pointer, then
+    /// the elements and scroll views under it.
+    pub(crate) fn wheel_input(&mut self, ev: WheelEvent, pinch: bool) {
+        if self.app_wheel(&ev) { return; }
+        if pinch && self.pinch_wheel(ev.x, ev.y, ev.dy) { return; }
+        self.wheel_event(ev);
+    }
+
+    /// Offers `ev` to the app's `on_wheel`; true when it took it.
+    fn app_wheel(&mut self, ev: &WheelEvent) -> bool {
+        let Some(f) = self.on_wheel else { return false };
+        let mut one = self.transaction();
+        let state = match &mut self.playground {
+            Some(playground) => playground.key_state(&mut self.state),
+            None => Some(&mut self.state),
+        };
+        if !state.is_some_and(|state| app_call!(f, state, ev, &mut one)) { return false; }
+        self.latch_requests(&mut one);
+        merge(&mut self.pending, one);
+        self.dirty = true;
+        true
+    }
+
     pub(crate) fn pinch_wheel(&mut self, x: f32, y: f32, dy: f32) -> bool {
         if dy == 0.0 || self.gesture_chain(x, y, |g| g.magnify.is_some(), false).is_empty() { return false; }
         self.magnify_event(MagnifyEvent::new(-dy / PINCH_WHEEL).at(x, y));

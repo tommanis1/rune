@@ -416,6 +416,8 @@ pub struct Runtime<S: 'static> {
     pub wall_start: Option<crate::time::Instant>,
     /// Called for keys unhandled by the focused control; return true to consume it.
     pub on_key: Option<fn(&mut S, &KeyEvent, &mut Tx) -> bool>,
+    /// Called for every wheel event before anything under the pointer; true consumes it.
+    pub on_wheel: Option<fn(&mut S, &crate::WheelEvent, &mut Tx) -> bool>,
     pub(crate) nodes: Vec<Node>,
     /// The last commit's node buffer, emptied, for the next flatten to fill: an app of a few
     /// thousand elements otherwise maps and faults in megabytes every commit.
@@ -850,6 +852,7 @@ impl<S: 'static> Runtime<S> {
             watch: Default::default(),
             wall_start: None,
             on_key: None,
+            on_wheel: None,
             nodes: Vec::new(),
             spare_nodes: Vec::new(),
             apply_scratch: Default::default(),

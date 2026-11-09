@@ -224,13 +224,18 @@ impl<S: 'static> Running<S> {
             WindowEvent::MouseWheel { delta, .. } => {
                 let Some((x, y)) = self.rt.pointer() else { return false };
                 let (dx, dy) = crate::runtime::wheel_delta(*delta, scale, self.input.mods.shift_key());
+                let precise = matches!(delta, winit::event::MouseScrollDelta::PixelDelta(_));
+                let ev = crate::WheelEvent::new(dx, dy).at(x, y).mods(modifiers(self.input.mods)).precise(precise);
                 // A page's pinch is the browser's zoom.
-                if self.input.mods.control_key() { return !self.input.document && self.rt.pinch_wheel(x, y, dy); }
+                if self.input.mods.control_key() {
+                    if self.input.document { return false; }
+                    self.rt.wheel_input(ev, true);
+                    return true;
+                }
                 // On a content-sized embedded canvas, vertical wheel belongs to the page unless
                 // a horizontal strip is being scrolled.
                 if self.input.fit_height && dx.abs() <= dy.abs() { return false; }
-                let precise = matches!(delta, winit::event::MouseScrollDelta::PixelDelta(_));
-                self.rt.wheel_event(crate::WheelEvent::new(dx, dy).at(x, y).mods(modifiers(self.input.mods)).precise(precise));
+                self.rt.wheel_input(ev, false);
             }
             // A page's Tab is the browser's, through the mirror's links and buttons.
             WindowEvent::KeyboardInput { event, .. }

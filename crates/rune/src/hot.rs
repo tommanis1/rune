@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::render::{Gpu, OFFSCREEN_FORMAT, Offscreen, Renderer};
 use crate::runtime::{Env, Waker};
 use crate::tooling::{AppSpec, Args, initial_state, runtime_for, tree_json};
-use crate::{Cx, El, KeyEvent, Tx};
+use crate::{Cx, El, KeyEvent, Tx, WheelEvent};
 use std::any::Any;
 
 // The hot tip crate owns only these thin typed adapters. Runtime<HostState>, layout,
@@ -24,6 +24,7 @@ pub(crate) struct HostState {
     poll: fn(&mut HostState, f64, &mut Tx) -> bool,
     setup: fn(&mut HostState, Waker),
     key: fn(&mut HostState, &KeyEvent, &mut Tx) -> bool,
+    wheel: fn(&mut HostState, &WheelEvent, &mut Tx) -> bool,
 }
 
 thread_local! {
@@ -106,6 +107,12 @@ fn key_adapter<S: 'static>(host: &mut HostState, key: &KeyEvent, tx: &mut Tx) ->
     patched_or_original!("on_key", f, host.value.downcast_mut::<S>().unwrap(), key, &mut *tx)
 }
 
+fn wheel_adapter<S: 'static>(host: &mut HostState, ev: &WheelEvent, tx: &mut Tx) -> bool {
+    let spec = host.spec.downcast_ref::<AppSpec<S>>().unwrap();
+    let Some(f) = spec.on_wheel else { return false };
+    patched_or_original!("on_wheel", f, host.value.downcast_mut::<S>().unwrap(), ev, &mut *tx)
+}
+
 pub(crate) fn run<S: 'static>(spec: AppSpec<S>, args: Args) {
     run_app(crate::App::new(spec), args);
 }
@@ -127,8 +134,9 @@ pub(crate) fn run_app<S: 'static>(app: crate::App<S>, mut args: Args) {
         poll: Some(|s: &mut HostState, t, tx| (s.poll)(s, t, tx)),
         setup: Some(|s: &mut HostState, wake| (s.setup)(s, wake)),
         on_key: Some(|s: &mut HostState, key, tx| (s.key)(s, key, tx)),
+        on_wheel: Some(|s: &mut HostState, ev, tx| (s.wheel)(s, ev, tx)),
     };
-    let state = HostState { value, spec: Box::new(spec), view: view_adapter::<S>, poll: poll_adapter::<S>, setup: setup_adapter::<S>, key: key_adapter::<S> };
+    let state = HostState { value, spec: Box::new(spec), view: view_adapter::<S>, poll: poll_adapter::<S>, setup: setup_adapter::<S>, key: key_adapter::<S>, wheel: wheel_adapter::<S> };
     run_host(shell, state, args, (srgb_blend, font_smoothing), modifier_keys, frame);
 }
 
@@ -412,7 +420,7 @@ mod tests {
 
     fn runtime<S: Default + 'static>(view: fn(&S, &mut Cx<S>) -> El) -> crate::Runtime<HostState> {
         let spec = AppSpec::new("test", (300.0, 200.0), S::default, view);
-        let host = HostState { value: Box::new((spec.init)()), spec: Box::new(spec), view: view_adapter::<S>, poll: poll_adapter::<S>, setup: setup_adapter::<S>, key: key_adapter::<S> };
+        let host = HostState { value: Box::new((spec.init)()), spec: Box::new(spec), view: view_adapter::<S>, poll: poll_adapter::<S>, setup: setup_adapter::<S>, key: key_adapter::<S>, wheel: wheel_adapter::<S> };
         crate::Runtime::new(host, |s, cx| (s.view)(s, cx), (300.0, 200.0), Env::new(true, 1.0))
     }
 
