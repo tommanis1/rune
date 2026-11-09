@@ -374,6 +374,7 @@ impl<S: 'static> Runtime<S> {
     pub(super) fn frame_step(&mut self, elapsed: f64, catch_up: f64, dt: f64) -> bool {
         // Each queued action runs with its own input's arrival time; nothing else has one.
         let _input = crate::input::time::scope(None);
+        let began = super::why_log::on().then(std::time::Instant::now);
         self.interaction_frame_begins();
         let mut live_woke = self.take_live_wake();
         // Another window may have switched the font families since this one's last frame.
@@ -634,6 +635,10 @@ impl<S: 'static> Runtime<S> {
         self.idle_frame_ends();
         self.interaction_built();
         if !open_urls.is_empty() { self.open_urls(open_urls); }
+        if let Some(began) = began {
+            let loops = self.loops.keys().filter_map(|id| self.nodes.iter().find(|n| n.id == *id)).map(|n| n.key.clone().unwrap_or_else(|| n.path.clone()));
+            super::why_log::frame(began.elapsed().as_secs_f64() * 1000.0, std::mem::take(&mut self.commit_why), self.animating, self.anim_sources, loops);
+        }
         self.animating
     }
 
@@ -720,19 +725,27 @@ impl<S: 'static> Runtime<S> {
         }
         let mut source = |on: bool, bit: u16| { if on { sources |= bit; } on };
         self.begin_exit_mask();
-        animating |= self.build();
+        let built = self.build();
+        super::why_log::other(0, built);
+        animating |= built;
         // Compensate drawn motion, leaving unrelated layout and growth springs alone.
         for _ in 0..3 {
             if !self.follow_keeps() { break; }
             animating |= self.build();
         }
         self.finish_keeps();
-        animating |= self.write_drawn_rects();
+        let rects = self.write_drawn_rects();
+        super::why_log::other(1, rects);
+        animating |= rects;
         self.report_at_bottom();
-        animating |= self.report_visible_rows();
+        let rows = self.report_visible_rows();
+        super::why_log::other(2, rows);
+        animating |= rows;
         self.report_layout();
         // A report waits for the next frame: draw one to deliver it.
-        animating |= self.report_drawn() | self.report_visible();
+        let reports = self.report_drawn() | self.report_visible();
+        super::why_log::other(3, reports);
+        animating |= reports;
         self.end_exit_mask();
         self.record_rewind();
         animating |= source(self.loops_active, AnimSource::LOOP);
